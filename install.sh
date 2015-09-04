@@ -16,8 +16,4 @@ ln -s $CURRENT_DIR/tmux/.tmux.conf ~/.tmux.conf
 ln -s $CURRENT_DIR/vim/.vimrc ~/.vimrc
 ln -s $CURRENT_DIR/git/.gitconfig ~/.gitconfig
 
-echo Updating env to use new dotfiles
-
-source ~/.bashrc
-tmux source-file ~/.tmux.conf
-#vimrc change check is within .vimrc itself
+./update_env.sh
