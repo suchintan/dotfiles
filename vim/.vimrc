@@ -34,4 +34,13 @@ set list lcs=trail:·,precedes:«,extends:»,tab:▸\
 
 set mouse=a " Allow scrolling with a mouse
 
-set clipboard=unnamedplus
+set clipboard=unnamedplus "For yanking to global clipboard
+
+"Auto-update changes to vimrc
+augroup myvimrc
+    au!
+    au BufWritePost .vimrc,_vimrc,vimrc,.gvimrc,_gvimrc,gvimrc so $MYVIMRC | if has('gui_running') | so $MYGVIMRC | endif
+augroup END
+
+"Lets you know when the file has changed in the background
+:au FileChangedShell * echo "Warning: File changed on disk"
