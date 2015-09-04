@@ -1,0 +1,11 @@
+[user]
+	name = Suchintan Singh
+	email = suchintan@hearsaycorp.com
+[merge]
+    tool = opendiff
+[alias]
+    st = status
+    co = checkout
+    ci = commit
+[color]
+    ui = true
