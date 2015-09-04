@@ -33,3 +33,5 @@ au BufWritePre * :%s/\s\+$//e  " clear white space in the end of lines
 set list lcs=trail:·,precedes:«,extends:»,tab:▸\
 
 set mouse=a " Allow scrolling with a mouse
+
+set clipboard=unnamedplus
