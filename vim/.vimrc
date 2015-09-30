@@ -11,7 +11,7 @@ syntax on "pretty syntax
 :set autoread "Update the file with changs live
 
 :set hlsearch "Highlight all search matches
-:set smartcase "Make searches case insensitive
+:set ignorecase "Make searches case insensitive
 :set incsearch "Show matches while typing the search string
 
 :set laststatus=2 "Keeps statusline on alllll the time
