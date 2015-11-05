@@ -44,3 +44,14 @@ augroup END
 
 "Lets you know when the file has changed in the background
 :au FileChangedShell * echo "Warning: File changed on disk"
+
+" Set splits to be more natural
+set splitbelow
+set splitright
+
+" Change wildmenu
+set wildmenu
+set wildmode=list:longest
+
+" Set colourscheme
+colorscheme elflord
