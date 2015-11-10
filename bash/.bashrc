@@ -18,7 +18,8 @@ alias poly='cd ~/projects/project-poly'
 alias activities='cd ~/projects/hearsay-activities'
 alias service-restart='sudo service uwsgi restart && sudo service nginx restart'
 alias gfu="git fetch upstream && git rebase upstream/master"
-
+alias ls="ls --color=auto"
+alias clip="nc localhost 8377" # for clipper
 
 export HISTCONTROL=ignoredups:erasedups  # no duplicate entries
 export HISTSIZE=100000                   # big big history
@@ -27,3 +28,4 @@ shopt -s histappend                      # append to history, don't overwrite it
 
 # Save and reload the history after each command finishes
 export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
+
