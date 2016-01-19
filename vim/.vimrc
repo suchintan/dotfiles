@@ -45,7 +45,7 @@ set wildmode=list:longest
 " Set colourscheme
 colorscheme elflord
 
-set runtimepath^=~/.vim/bundle/ctrlp.vim,~/.vim/bundle/vim-airline.vim
+set runtimepath^=~/.vim/bundle/ctrlp.vim,~/.vim/bundle/vim-airline.vim,~/.vim/bundle/YouCompleteMe.vim
 
 let g:ctrlp_map = '<c-p>'
 let g:ctrlp_cmd = 'CtrlP'
