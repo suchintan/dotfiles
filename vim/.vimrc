@@ -12,6 +12,7 @@ set expandtab "Turns tabs to spaces
 set softtabstop=4 "spaces feel like tabs
 
 set autoread "Update the file with changs live
+set shortmess+=A " No .swp warning
 
 set hlsearch "Highlight all search matches
 set ignorecase "Make searches case insensitive
