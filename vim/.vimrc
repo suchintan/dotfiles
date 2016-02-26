@@ -11,7 +11,6 @@ set shiftwidth=4
 set expandtab "Turns tabs to spaces
 set softtabstop=4 "spaces feel like tabs
 
-set autoread "Update the file with changs live
 set shortmess+=A " No .swp warning
 
 set hlsearch "Highlight all search matches
@@ -38,22 +37,46 @@ else
     set ttymouse=xterm2 "match iterm2 mouse settings
 end
 
-"Lets you know when the file has changed in the background
-:au FileChangedShell * echo "Warning: File changed on disk"
-
 " Set splits to be more natural
 set splitbelow
 set splitright
 
-" Change wildmenu so that it works like the terminal
+" Change wildmenu (tab completion shows more naturally)  so that it works like the terminal
 set wildmenu
 set wildmode=list:longest
+
+" Return to last edit position when opening files, except git commit message
+autocmd BufReadPost *
+    \ if &ft != 'gitcommit' && line("'\"") > 0 && line("'\"") <= line("$") |
+    \   exe "normal g`\"" |
+    \ endif
 
 " Set colourscheme
 colorscheme elflord
 
 set runtimepath^=~/.vim/bundle/ctrlp.vim,~/.vim/bundle/vim-airline.vim,~/.vim/bundle/YouCompleteMe.vim
 
+
+call plug#begin('~/.vim/plugged')
+" Fuzzy file finder
+Plug 'ctrlpvim/ctrlp.vim'
+
+" Fancy statusline
+Plug 'bling/vim-airline'
+
+" Suggestions
+Plug 'Valloric/YouCompleteMe', { 'do': './install.py' }
+
+" Syntastic: Code Linting
+Plug 'scrooloose/syntastic', { 'for': ['php', 'python', 'javascript', 'css'] }
+
+" Ag within vim
+Plug 'rking/ag.vim'
+
+call plug#end()
+
+
+"""""""" Plugin Configurations """""""""""""
 let g:ctrlp_map = '<c-p>'
 let g:ctrlp_cmd = 'CtrlP'
 
