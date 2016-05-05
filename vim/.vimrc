@@ -45,6 +45,9 @@ set splitright
 set wildmenu
 set wildmode=list:longest
 
+" Ignore pyc and o files when showing files in wildmenu
+:set wildignore=*.o,*.pyc
+
 " Return to last edit position when opening files, except git commit message
 autocmd BufReadPost *
     \ if &ft != 'gitcommit' && line("'\"") > 0 && line("'\"") <= line("$") |
@@ -75,18 +78,8 @@ Plug 'rking/ag.vim'
 
 call plug#end()
 
-
-"""""""" Plugin Configurations """""""""""""
 let g:ctrlp_map = '<c-p>'
-let g:ctrlp_cmd = 'CtrlP'
-
-:set wildignore=*.o,*.pyc
-
-" Show control-p buffer and search em
-map <c-b> :CtrlPBuffer<CR>
-
-" Show control-p mixed mode and search em
-map <c-m> :CtrlPMixed<CR>
+let g:ctrlp_cmd = 'CtrlPMixed'
 
 " Move to the next buffer
 nmap <leader>l :bnext<CR>
