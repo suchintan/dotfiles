@@ -97,6 +97,10 @@ nmap <leader>bl :ls<CR>
 nnoremap <leader>y :call system('nc localhost 8377', @0)<CR>
 
 let g:airline#extensions#tabline#enabled = 1
+let g:syntastic_html_tidy_quiet_messages = { "level" : "warnings" }
+let g:syntastic_html_tidy_ignore_errors = [
+    \  "'<' + '/' + letter not allowed here"
+    \ ]
 
 " If we have The Silver Searcher
 if executable('ag')
