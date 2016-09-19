@@ -1,0 +1,18 @@
+source ~/.vimrc
+
+nnoremap / :action Find<CR>
+nnoremap n :action FindNext<CR>
+nnoremap N :action FindPrevious<CR>
+nnoremap U :action $Redo<CR>
+#nnoremap <Space>o :action GotoClass<CR>
+nnoremap <c-p> :action GotoFile<CR>
+nnoremap <leader>q :action CloseContent<CR>
+nnoremap <leader>k :action FileStructurePopup<CR>
+nnoremap <leader>h :action QuickJavaDoc<CR>
+nnoremap <leader>l :action NextTab<CR>
+nnoremap <leader>p :action PreviousTab<CR>
+nnoremap <leader>t :action ActivateTerminalToolWindow<CR>
+noremap <leader>< :action MoveTabRight<CR>
+noremap <leader>> :action MoveTabRight<CR>
+nnoremap <c-w><right> :action NextSplitter<CR>
+nnoremap <c-w><left> :action NextSplitter<CR>

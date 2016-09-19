@@ -57,7 +57,7 @@ autocmd BufReadPost *
 " Set colourscheme
 colorscheme elflord
 
-set runtimepath^=~/.vim/bundle/ctrlp.vim,~/.vim/bundle/vim-airline.vim,~/.vim/bundle/YouCompleteMe.vim
+set runtimepath^=~/.vim/bundle/ctrlp.vim,~/.vim/bundle/vim-airline.vim
 
 
 call plug#begin('~/.vim/plugged')
