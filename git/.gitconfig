@@ -1,11 +1,21 @@
 [user]
 	name = Suchintan Singh
-	email = suchintansingh@gmail.com
+	email = suchintan.singh@faire.com
 [merge]
     tool = opendiff
 [alias]
     st = status
     co = checkout
     ci = commit
+    br = !sh -c \"git checkout -b suchintan.$1\"
+    sb = !sh -c \"git checkout suchintan.$1\"
+    delete = branch -D
+    pushf = push --force-with-lease
+    b = !git --no-pager branch --sort=-committerdate
+    pff = pull --ff-only
 [color]
     ui = true
+[push]
+	default = current
+[pager]
+	branch = false

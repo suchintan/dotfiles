@@ -11,7 +11,8 @@ nnoremap <leader>k :action FileStructurePopup<CR>
 nnoremap <leader>h :action QuickJavaDoc<CR>
 nnoremap <leader>l :action NextTab<CR>
 nnoremap <leader>p :action PreviousTab<CR>
-nnoremap <leader>t :action ActivateTerminalToolWindow<CR>
+#nnoremap <leader>t :action ActivateTerminalToolWindow<CR>
+nnoremap <leader>t :action GotoTest<CR>
 noremap <leader>< :action MoveTabRight<CR>
 noremap <leader>> :action MoveTabRight<CR>
 nnoremap <c-w><right> :action NextSplitter<CR>

@@ -67,9 +67,6 @@ Plug 'ctrlpvim/ctrlp.vim'
 " Fancy statusline
 Plug 'bling/vim-airline'
 
-" Suggestions
-Plug 'Valloric/YouCompleteMe', { 'do': './install.py' }
-
 " Syntastic: Code Linting
 Plug 'scrooloose/syntastic', { 'for': ['php', 'python', 'javascript', 'css'] }
 

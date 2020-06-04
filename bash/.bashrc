@@ -13,10 +13,6 @@ then
     export SSH_AUTH_SOCK=$SOCK
 fi
 
-alias fanmgmt='cd ~/projects/HearsayLabs/fanmgmt'
-alias poly='cd ~/projects/project-poly'
-alias activities='cd ~/projects/hearsay-activities'
-alias service-restart='sudo service uwsgi restart && sudo service nginx restart'
 alias gfu="git fetch upstream && git rebase upstream/master"
 alias clip="nc localhost 8377" # for clipper
 alias ag='ag --path-to-agignore=~/.agignore'
@@ -35,3 +31,5 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 1.7)
 setjdk() {
     export JAVA_HOME=$(/usr/libexec/java_home -v $1)
 }
+
+alias dynamodb='cd ~/Development/dynamodb_local_latest && java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -sharedDb'
