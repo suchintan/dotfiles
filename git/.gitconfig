@@ -1,6 +1,7 @@
 [user]
 	name = Suchintan Singh
-	email = suchintan.singh@faire.com
+    email = suchintan.singh@faire.com
+    main-branch = master
 [merge]
     tool = opendiff
 [alias]
@@ -12,7 +13,13 @@
     delete = branch -D
     pushf = push --force-with-lease
     b = !git --no-pager branch --sort=-committerdate
-    pff = pull --ff-only
+    pff = !sh -c \"git fetch origin && git pull --ff-only origin `git config user.main-branch`\"
+    a = commit -a --amend
+    p = push origin HEAD
+    frb = !sh -c \"git fetch origin && git rebase origin/`git config user.main-branch`\"
+    rb = rebase origin/HEAD
+    c = commit -am
+    sh = !sh -c \"git show --name-only | cat\"
 [color]
     ui = true
 [push]

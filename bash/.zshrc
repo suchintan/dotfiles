@@ -112,5 +112,30 @@ export SDKMAN_DIR="/Users/suchintan/.sdkman"
 alias backend='cd ~/Development/backend'
 alias datascience='cd ~/Development/datascience'
 alias dynamodb='cd ~/Development/dynamodb_local_latest && java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -sharedDb'
+alias elasticsearch='docker run -p 9200:9200 -e "discovery.type=single-node" docker.elastic.co/elasticsearch/elasticsearch:7.8.0'
+
+alias initPlot='echo "x <- seq(0, 480, 1)" > plot.r && echo "plot(x, 2.0 - (2 / (1 + exp(-x * 0.01))), type=\"l\")" >> plot.r'
+alias plot='Rscript plot.r && open Rplots.pdf'
+alias cleanupPlot='rm plot.r && rm Rplots.pdf'
+alias pytest='python -m pytest'
+
 
 export PATH=$PATH:$HOME/bin
+# export PATH="/usr/local/anaconda3/bin:$PATH"  # commented out by conda initialize
+
+# >>> conda initialize >>>
+# !! Contents within this block are managed by 'conda init' !!
+__conda_setup="$('/usr/local/anaconda3/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__conda_setup"
+else
+    if [ -f "/usr/local/anaconda3/etc/profile.d/conda.sh" ]; then
+        . "/usr/local/anaconda3/etc/profile.d/conda.sh"
+    else
+        export PATH="/usr/local/anaconda3/bin:$PATH"
+    fi
+fi
+unset __conda_setup
+# <<< conda initialize <<<
+
+conda activate python373
