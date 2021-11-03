@@ -20,6 +20,7 @@ ln -s $CURRENT_DIR/vim/.vimrc ~/.vimrc
 ln -s $CURRENT_DIR/vim/.ideavimrc ~/.ideavimrc
 ln -s $CURRENT_DIR/git/.gitconfig ~/.gitconfig
 ln -s $CURRENT_DIR/vim/.vim ~/.vim
+touch ~/.zshrc_secrets
 
 echo Installing brew
 /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"

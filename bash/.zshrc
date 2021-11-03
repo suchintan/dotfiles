@@ -101,15 +101,13 @@ source $ZSH/oh-my-zsh.sh
 export HISTCONTROL=ignoredups:erasedups  # no duplicate entries
 export HISTSIZE=100000                   # big big history
 export HISTFILESIZE=100000               # big big history#
+setopt APPEND_HISTORY                    # append to history, don't overwrite it
 #setopt PROMPT_SUBST
 #PROMPT='%n@%m: ${(%):-%~} '
 
-#THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
-export SDKMAN_DIR="/Users/suchintan/.sdkman"
-[[ -s "/Users/suchintan/.sdkman/bin/sdkman-init.sh" ]] && source "/Users/suchintan/.sdkman/bin/sdkman-init.sh"
 
-
-alias backend='cd ~/Development/backend'
+alias dev='cd ~/Development'
+alias search='cd ~/Development/product-search-service'
 alias datascience='cd ~/Development/datascience'
 alias dynamodb='cd ~/Development/dynamodb_local_latest && java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -sharedDb'
 alias elasticsearch='docker run -p 9200:9200 -e "discovery.type=single-node" docker.elastic.co/elasticsearch/elasticsearch:7.8.0'
@@ -144,4 +142,10 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
 
-export NODE_AUTH_TOKEN="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"
+source ~/.zshrc_secrets # store all secrets here
+
+#THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
+export SDKMAN_DIR="/Users/suchintan/.sdkman"
+[[ -s "/Users/suchintan/.sdkman/bin/sdkman-init.sh" ]] && source "/Users/suchintan/.sdkman/bin/sdkman-init.sh"
+
+
