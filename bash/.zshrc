@@ -68,7 +68,7 @@ ZSH_THEME="af-magic"
 # Custom plugins may be added to ~/.oh-my-zsh/custom/plugins/
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
-plugins=(git you-should-use)
+plugins=(git you-should-use zsh-syntax-highlighting colored-man-pages colorize pip python brew osx zsh-autosuggestions)
 
 source $ZSH/oh-my-zsh.sh
 
@@ -125,16 +125,16 @@ export PATH=$PATH:$HOME/bin
 
 # >>> conda initialize >>>
 # !! Contents within this block are managed by 'conda init' !!
-__conda_setup="$('/usr/local/anaconda3/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
-if [ $? -eq 0 ]; then
-    eval "$__conda_setup"
-else
-    if [ -f "/usr/local/anaconda3/etc/profile.d/conda.sh" ]; then
-        . "/usr/local/anaconda3/etc/profile.d/conda.sh"
-    else
-        export PATH="/usr/local/anaconda3/bin:$PATH"
-    fi
-fi
+#__conda_setup="$('/usr/local/anaconda3/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
+#if [ $? -eq 0 ]; then
+#    eval "$__conda_setup"
+#else
+#    if [ -f "/usr/local/anaconda3/etc/profile.d/conda.sh" ]; then
+#        . "/usr/local/anaconda3/etc/profile.d/conda.sh"
+#    else
+#        export PATH="/usr/local/anaconda3/bin:$PATH"
+#    fi
+#fi
 unset __conda_setup
 # <<< conda initialize <<<
 
