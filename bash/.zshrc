@@ -135,7 +135,13 @@ export PATH=$PATH:$HOME/bin
 #        export PATH="/usr/local/anaconda3/bin:$PATH"
 #    fi
 #fi
-unset __conda_setup
+#unset __conda_setup
 # <<< conda initialize <<<
 
-conda activate python373
+#conda activate python373
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+export NODE_AUTH_TOKEN="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"
