@@ -1,0 +1,36 @@
+   31  brew install tmux
+   54  brew install ag
+   56  brew install rg
+  104  brew tap azure/functions\n\n
+  105  brew install azure-functions-core-tools@3\n\n
+  106  brew install azure-cli\n
+  110  brew install --cask ~/Downloads/dotnet-sdk.rb
+  113  brew install jq
+  114  brew install --cask microsoft-azure-storage-explorer
+  115  brew install --cask visual-studio-code\n
+  116  brew list --cask
+  117  brew install --cask postman
+  118  brew install --cask postman dash insomnia
+  119  brew install htop yarn coreutils starship
+  135  brew install vim-plug
+  192  brew search jdk
+  193  brew info openjdk
+  194  brew info openjdk@16
+  195  brew install openjdk
+  196  brew tap dockerhub
+  207  brew cask install dockerhub
+  208  brew cask install docker
+  209  brew install --cask docker
+  230  brew install mdless
+  271  brew uninstall jdk
+  272  brew install sdkman
+  275  brew uninstall openjdk
+  345  brew cask install intelliJ
+  346  brew install --cask intelliJ
+  347  brew install --cask intelliJ-idea
+  361  brew install maven
+  509  brew install --cask loom
+  576  brew install helm@3.6.3
+  577  brew search helm
+  782  brew install --cask glogg
+  823  brew install --cask klogg
