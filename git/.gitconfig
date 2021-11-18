@@ -1,7 +1,7 @@
 [user]
 	name = Suchintan Singh
     email = suchintan.singh@gopuff.com
-    main-branch = master
+    main-branch = main
 [merge]
     tool = opendiff
 [alias]
