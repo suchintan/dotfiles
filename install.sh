@@ -31,6 +31,11 @@ echo Installing brew stuff
 brew install tmux
 brew install rg
 
+echo Installing DS stuff
+brew install jupyter
+pip install jupyterthemes
+
+
 echo Installing Plug.vim
 
 curl -fLo ~/.vim/autoload/plug.vim --create-dirs \

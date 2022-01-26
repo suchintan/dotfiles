@@ -68,7 +68,7 @@ ZSH_THEME="af-magic"
 # Custom plugins may be added to ~/.oh-my-zsh/custom/plugins/
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
-plugins=(git you-should-use zsh-syntax-highlighting colored-man-pages colorize pip python brew osx zsh-autosuggestions)
+plugins=(git you-should-use zsh-syntax-highlighting colored-man-pages colorize pip python brew macos zsh-autosuggestions)
 
 source $ZSH/oh-my-zsh.sh
 
