@@ -23,7 +23,10 @@ ln -s $CURRENT_DIR/vim/.vim ~/.vim
 touch ~/.zshrc_secrets
 
 echo Installing brew
-/usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> /Users/suchintan/.zprofile
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
 brew tap caskroom/cask
 brew install caskroom/cask/brew-cask
 
@@ -33,7 +36,7 @@ brew install rg
 
 echo Installing DS stuff
 brew install jupyter
-pip install jupyterthemes
+pip3 install jupyterthemes
 
 
 echo Installing Plug.vim
@@ -45,10 +48,11 @@ echo Please open .vimrc and run :PlugInstall to finish installing plug
 
 echo Installing zsh
 brew install zsh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)"
 git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting
 git clone https://github.com/zsh-users/zsh-autosuggestions $ZSH_CUSTOM/plugins/zsh-autosuggestions
 git clone https://github.com/MichaelAquilina/zsh-you-should-use.git $ZSH_CUSTOM/plugins/you-should-use
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)"
+ln -s $CURRENT_DIR/bash/.zshrc ~/.zshrc
 
 
 echo Updating env to use new dotfiles
