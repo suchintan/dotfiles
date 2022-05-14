@@ -54,6 +54,10 @@ git clone https://github.com/zsh-users/zsh-autosuggestions $ZSH_CUSTOM/plugins/z
 git clone https://github.com/MichaelAquilina/zsh-you-should-use.git $ZSH_CUSTOM/plugins/you-should-use
 ln -s $CURRENT_DIR/bash/.zshrc ~/.zshrc
 
+echo installing helpers
+brew install --cask rectangle
+curl -s 'https://api.macapps.link/en/vscode-postman-iterm-flux-istatmenus-vlc-slack' | sh
+
 
 echo Updating env to use new dotfiles
 source ~/.zshrc
