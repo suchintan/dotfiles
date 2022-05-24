@@ -63,6 +63,7 @@ brew install --cask iterm2
 brew install --cask flux
 brew install --cask vlc
 brew install --cask istat-menus
+brew install node
 #curl -s 'https://api.macapps.link/en/vscode-postman-iterm-flux-istatmenus-vlc-slack' | sh
 
 
