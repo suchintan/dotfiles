@@ -56,7 +56,14 @@ ln -s $CURRENT_DIR/bash/.zshrc ~/.zshrc
 
 echo installing helpers
 brew install --cask rectangle
-curl -s 'https://api.macapps.link/en/vscode-postman-iterm-flux-istatmenus-vlc-slack' | sh
+brew install --cask visual-studio-code
+brew install --cask slack
+brew install --cask postman
+brew install --cask iterm2
+brew install --cask flux
+brew install --cask vlc
+brew install --cask istat-menus
+#curl -s 'https://api.macapps.link/en/vscode-postman-iterm-flux-istatmenus-vlc-slack' | sh
 
 
 echo Updating env to use new dotfiles
