@@ -12,7 +12,7 @@
     sb = !sh -c \"git checkout suchintan.$1\"
     delete = branch -D
     pushf = push --force-with-lease
-    b = !git --no-pager branch --sort=-committerdate
+    b = !git --no-pager branch --sort=committerdate
     pff = !sh -c \"git fetch origin && git pull --ff-only origin `git config user.main-branch`\"
     a = commit -a --amend
     p = push origin HEAD
@@ -20,6 +20,7 @@
     rb = rebase origin/HEAD
     c = commit -am
     sh = !sh -c \"git show --name-only | cat\"
+    delete-all = "!git branch | grep -v main | while read -r line; do git delete $line; done"
 [color]
     ui = true
 [push]
