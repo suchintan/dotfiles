@@ -33,18 +33,13 @@ brew install caskroom/cask/brew-cask
 echo Installing brew stuff
 brew install tmux
 brew install rg
+brew install tree
+brew install python
 
 echo Installing DS stuff
 brew install jupyter
 pip3 install jupyterthemes
 
-
-echo Installing Plug.vim
-
-curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
-        https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
-
-echo Please open .vimrc and run :PlugInstall to finish installing plug
 
 echo Installing zsh
 brew install zsh
@@ -63,9 +58,17 @@ brew install --cask iterm2
 brew install --cask flux
 brew install --cask vlc
 brew install --cask istat-menus
+brew install --cask signal
+brew install --cask jumpcut
 brew install node
 #curl -s 'https://api.macapps.link/en/vscode-postman-iterm-flux-istatmenus-vlc-slack' | sh
 
+echo Installing Plug.vim
+
+curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
+        https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
+
+echo Please open .vimrc and run :PlugInstall to finish installing plug
 
 echo Updating env to use new dotfiles
 source ~/.zshrc
