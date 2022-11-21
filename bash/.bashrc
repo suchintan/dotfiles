@@ -33,3 +33,20 @@ setjdk() {
 }
 
 alias dynamodb='cd ~/Development/dynamodb_local_latest && java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -sharedDb'
+
+### Autoomatically activate virtual environment
+function auto_poetry_shell {
+    if [ ! -n "${POETRY_ACTIVE+1}" ]; then
+        if [ -f "pyproject.toml" ] ; then
+            poetry shell
+        fi
+    fi
+}
+
+function cd {
+    builtin cd "$@"
+    auto_poetry_shell
+}
+
+auto_poetry_shell
+
