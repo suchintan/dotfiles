@@ -146,6 +146,20 @@ export MICRONAUT_ENVIRONMENTS=dev-suchintan
 
 source ~/.zshrc_secrets # store all secrets here
 
+# automatic python virtual env with poetry
+function auto_poetry_shell {
+    if [ -f "pyproject.toml" ] ; then
+        source $(poetry env info --path)/bin/activate
+    fi
+}
+
+function cd {
+    builtin cd "$@"
+    auto_poetry_shell
+}
+
+auto_poetry_shell
+
 #THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
 export SDKMAN_DIR="/Users/suchintan/.sdkman"
 [[ -s "/Users/suchintan/.sdkman/bin/sdkman-init.sh" ]] && source "/Users/suchintan/.sdkman/bin/sdkman-init.sh"

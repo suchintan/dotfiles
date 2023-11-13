@@ -61,6 +61,7 @@ brew install --cask istat-menus
 brew install --cask signal
 brew install --cask jumpcut
 brew install node
+brew install gh
 #curl -s 'https://api.macapps.link/en/vscode-postman-iterm-flux-istatmenus-vlc-slack' | sh
 
 echo Installing Plug.vim

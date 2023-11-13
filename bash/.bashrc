@@ -34,19 +34,51 @@ setjdk() {
 
 alias dynamodb='cd ~/Development/dynamodb_local_latest && java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -sharedDb'
 
-### Autoomatically activate virtual environment
-function auto_poetry_shell {
-    if [ ! -n "${POETRY_ACTIVE+1}" ]; then
-        if [ -f "pyproject.toml" ] ; then
-            poetry shell
-        fi
-    fi
+export NVM_DIR="$HOME/.nvm"
+  [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && \. "/opt/homebrew/opt/nvm/nvm.sh"  # This loads nvm
+  [ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ] && \. "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"  # This loads nvm bash_completion
+
+
+
+# JINA_CLI_BEGIN
+
+## autocomplete
+_jina() {
+  COMPREPLY=()
+  local word="${COMP_WORDS[COMP_CWORD]}"
+
+  if [ "$COMP_CWORD" -eq 1 ]; then
+    COMPREPLY=( $(compgen -W "$(jina commands)" -- "$word") )
+  else
+    local words=("${COMP_WORDS[@]}")
+    unset words[0]
+    unset words[$COMP_CWORD]
+    local completions=$(jina completions "${words[@]}")
+    COMPREPLY=( $(compgen -W "$completions" -- "$word") )
+  fi
 }
 
-function cd {
-    builtin cd "$@"
-    auto_poetry_shell
-}
+complete -F _jina jina
 
-auto_poetry_shell
+# session-wise fix
+ulimit -n 4096
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+# default workspace for Executors
 
+# JINA_CLI_END
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+. "$HOME/.cargo/env"
