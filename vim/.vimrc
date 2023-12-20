@@ -73,6 +73,9 @@ Plug 'scrooloose/syntastic', { 'for': ['php', 'python', 'javascript', 'css'] }
 " Ag within vim
 Plug 'rking/ag.vim'
 
+" AnsiEsc to visualize ANSI escape sequences
+Plug 'powerman/vim-plugin-AnsiEsc'
+
 call plug#end()
 
 let g:ctrlp_map = '<c-p>'
@@ -86,7 +89,8 @@ nmap <leader>p :bprevious<CR>
 
 " Close the current buffer and move to the previous one
 " This replicates the idea of closing a tab
-nmap <leader>q :bp <BAR> bd #<CR>
+nmap <leader>q :bd<CR>
+":bp <BAR> bd #<CR>
 
 " Show all open buffers and their status
 nmap <leader>bl :ls<CR>

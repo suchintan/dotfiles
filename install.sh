@@ -35,6 +35,11 @@ brew install tmux
 brew install rg
 brew install tree
 brew install python
+brew install postgresql
+brew install redis
+brew install klogg
+brew install jq
+brew install poetry
 
 echo Installing DS stuff
 brew install jupyter
