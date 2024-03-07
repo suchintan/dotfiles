@@ -82,3 +82,5 @@ export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 
 
 . "$HOME/.cargo/env"
+
+[ -f ~/.fzf.bash ] && source ~/.fzf.bash

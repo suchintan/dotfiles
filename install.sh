@@ -67,6 +67,8 @@ brew install --cask signal
 brew install --cask jumpcut
 brew install node
 brew install gh
+brew install ezf
+brew install zoxide
 #curl -s 'https://api.macapps.link/en/vscode-postman-iterm-flux-istatmenus-vlc-slack' | sh
 
 echo Installing Plug.vim
@@ -75,6 +77,9 @@ curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
         https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
 
 echo Please open .vimrc and run :PlugInstall to finish installing plug
+
+fzf init
+$(brew --prefix)/opt/fzf/install\n
 
 echo Updating env to use new dotfiles
 source ~/.zshrc

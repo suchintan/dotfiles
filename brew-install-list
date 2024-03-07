@@ -37,3 +37,5 @@ brew install --cask klogg
 brew install poetry
 brew install pre-commit
 brew install docker
+brew install ezf
+brew install zoxide

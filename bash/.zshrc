@@ -164,4 +164,13 @@ auto_poetry_shell
 export SDKMAN_DIR="/Users/suchintan/.sdkman"
 [[ -s "/Users/suchintan/.sdkman/bin/sdkman-init.sh" ]] && source "/Users/suchintan/.sdkman/bin/sdkman-init.sh"
 
+alias aecs="aws ecs execute-command --cluster ecs-skyvern-cluster-staging --container ecs-skyvern-staging --command "/bin/bash" --interactive --task"
+alias aecp="aws ecs execute-command --cluster ecs-skyvern-cluster-production --container ecs-skyvern-production --command "/bin/bash" --interactive --task"
+alias aets="aws ecs list-tasks --cluster ecs-skyvern-cluster-staging --query \"taskArns\" --output text | tee | sed 's/\// /g'"
+alias aetp="aws ecs list-tasks --cluster ecs-skyvern-cluster-production --query \"taskArns\" --output text | tee | sed 's/\// /g'"
+
+
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+eval "$(zoxide init zsh --cmd cd)"
 
