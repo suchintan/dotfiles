@@ -153,11 +153,6 @@ function auto_poetry_shell {
     fi
 }
 
-function cd {
-    builtin cd "$@"
-    auto_poetry_shell
-}
-
 auto_poetry_shell
 
 #THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
@@ -165,12 +160,35 @@ export SDKMAN_DIR="/Users/suchintan/.sdkman"
 [[ -s "/Users/suchintan/.sdkman/bin/sdkman-init.sh" ]] && source "/Users/suchintan/.sdkman/bin/sdkman-init.sh"
 
 alias aecs="aws ecs execute-command --cluster ecs-skyvern-cluster-staging --container ecs-skyvern-staging --command "/bin/bash" --interactive --task"
-alias aecp="aws ecs execute-command --cluster ecs-skyvern-cluster-production --container ecs-skyvern-production --command "/bin/bash" --interactive --task"
+alias aecp="aws ecs execute-command --cluster ecs-skyvern-cluster-production --container ecs-skyvern-worker-production --command "/bin/bash" --interactive --task"
 alias aets="aws ecs list-tasks --cluster ecs-skyvern-cluster-staging --query \"taskArns\" --output text | tee | sed 's/\// /g'"
 alias aetp="aws ecs list-tasks --cluster ecs-skyvern-cluster-production --query \"taskArns\" --output text | tee | sed 's/\// /g'"
 
+alias ssh_prod_api_cluster="aetp | awk '{print $NF}' | xargs -I {} sh -c 'aecp \"$@\"' sh {}"
+
+# Docker Aliases
+function dk() {
+    docker kill "$1" | xargs docker rm
+}
+alias dk=dk
+
 
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+function cd {
+    __zoxide_z "$@"
+    auto_poetry_shell
+}
 
-eval "$(zoxide init zsh --cmd cd)"
+eval "$(zoxide init zsh)"
 
+
+
+eval "$(gh copilot alias -- zsh)"
+
+alias ai='ghcs'
+
+alias llms='llm --system "be very concise when answering, and try to just give the commandline argument if asked. Dont decorate the output in any markup"'
+alias llmq='llm --system "be very concise when answering, and try to just answer the question. Dont decorate the output in any markup"'
+
+# Added by Windsurf
+export PATH="/Users/suchintan/.codeium/windsurf/bin:$PATH"

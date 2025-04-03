@@ -22,6 +22,7 @@
     sh = !sh -c \"git show --name-only | cat\"
     delete-all = "!git branch | grep -v main | while read -r line; do git delete $line; done"
     pr = !sh -c \"git p && gh pr create --fill && gh pr view --web\"
+    oss-pr = !sh -c \"git fetch origin pull/$1/head:pr/$1 && git checkout pr/$1\"
 [color]
     ui = true
 [push]
