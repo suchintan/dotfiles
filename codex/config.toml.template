@@ -1,0 +1,125 @@
+# Public-safe Codex config template.
+#
+# Copy selected sections into ~/.codex/config.toml and replace placeholders locally.
+# Do not symlink this template as-is unless you are comfortable with placeholder values.
+
+model = "gpt-5.5"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+personality = "pragmatic"
+service_tier = "fast"
+
+[projects."~/Development/dotfiles"]
+trust_level = "trusted"
+
+[projects."~/Development/Skyvern-cloud"]
+trust_level = "trusted"
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.context7.http_headers]
+CONTEXT7_API_KEY = "<YOUR_CONTEXT7_API_KEY>"
+
+[mcp_servers.linear]
+url = "https://mcp.linear.app/mcp"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.notion]
+url = "https://mcp.notion.com/mcp"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.pylon]
+url = "https://mcp.usepylon.com"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.skyvern]
+url = "https://api.skyvern.com/mcp/"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.skyvern.http_headers]
+x-api-key = "<YOUR_SKYVERN_API_KEY>"
+
+[mcp_servers.skyvern-staging]
+url = "https://api-staging.skyvern.com/mcp/"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.skyvern-staging.http_headers]
+x-api-key = "<YOUR_SKYVERN_STAGING_API_KEY>"
+
+[mcp_servers.datadog]
+command = "npx"
+args = ["datadog-mcp-server", "--site", "us5.datadoghq.com", "--logsSite", "us5.datadoghq.com", "--metricsSite", "us5.datadoghq.com"]
+default_tools_approval_mode = "approve"
+
+[mcp_servers.datadog.env]
+DD_API_KEY = "<YOUR_DATADOG_API_KEY>"
+DD_APP_KEY = "<YOUR_DATADOG_APP_KEY>"
+DD_SITE = "us5.datadoghq.com"
+DD_LOGS_SITE = "us5.datadoghq.com"
+DD_METRICS_SITE = "us5.datadoghq.com"
+
+[mcp_servers.exa]
+url = "https://mcp.exa.ai/mcp?exaApiKey=<YOUR_EXA_API_KEY>"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.redshift]
+command = "uvx"
+args = ["awslabs.redshift-mcp-server@latest"]
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+default_tools_approval_mode = "approve"
+
+[mcp_servers.redshift.env]
+AWS_PROFILE = "default"
+AWS_DEFAULT_REGION = "us-east-1"
+FASTMCP_LOG_LEVEL = "ERROR"
+
+[mcp_servers.redshift.tools.list_clusters]
+approval_mode = "approve"
+
+[mcp_servers.redshift.tools.list_databases]
+approval_mode = "approve"
+
+[mcp_servers.redshift.tools.list_columns]
+approval_mode = "approve"
+
+[mcp_servers.redshift.tools.list_schemas]
+approval_mode = "approve"
+
+[mcp_servers.redshift.tools.list_tables]
+approval_mode = "approve"
+
+[mcp_servers.redshift.tools.execute_query]
+approval_mode = "approve"
+
+[mcp_servers.skyvern-local]
+command = "<PATH_TO_SKYVERN_UV_TOOL_PYTHON>"
+args = ["-m", "skyvern", "run", "mcp"]
+default_tools_approval_mode = "approve"
+
+[mcp_servers.skyvern-local.env]
+SKYVERN_API_KEY = "<YOUR_LOCAL_SKYVERN_API_KEY>"
+SKYVERN_BASE_URL = "http://localhost:8000"
+
+[mcp_servers.superhuman-mail]
+url = "https://mcp.mail.superhuman.com/mcp"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.figma]
+url = "https://mcp.figma.com/mcp"
+default_tools_approval_mode = "approve"
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[notice]
+hide_rate_limit_model_nudge = true
+fast_default_opt_out = true
+
+[tui]
+status_line = ["model-with-reasoning", "project-name", "context-used", "five-hour-limit", "weekly-limit"]
+
+[features]
+goals = true

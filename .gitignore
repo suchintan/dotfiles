@@ -1,0 +1,11 @@
+.env
+*.env
+*.local
+*.local.*
+*.secret
+secrets/
+
+# Rendered agent configs may contain API keys. Commit templates instead.
+codex/config.toml
+claude/mcp_servers.json
+claude/claude.json

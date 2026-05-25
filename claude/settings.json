@@ -1,0 +1,95 @@
+{
+  "effortLevel": "xhigh",
+  "enabledPlugins": {},
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "90",
+    "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "extraKnownMarketplaces": {
+    "openai-codex": {
+      "source": {
+        "repo": "openai/codex-plugin-cc",
+        "source": "github"
+      }
+    }
+  },
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"$SUPERSET_HOME_DIR\" ] && [ -x \"$SUPERSET_HOME_DIR/hooks/notify.sh\" ] && \"$SUPERSET_HOME_DIR/hooks/notify.sh\" || true",
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/hooks/bash-history.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"$SUPERSET_HOME_DIR\" ] && [ -x \"$SUPERSET_HOME_DIR/hooks/notify.sh\" ] && \"$SUPERSET_HOME_DIR/hooks/notify.sh\" || true",
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"$SUPERSET_HOME_DIR\" ] && [ -x \"$SUPERSET_HOME_DIR/hooks/notify.sh\" ] && \"$SUPERSET_HOME_DIR/hooks/notify.sh\" || true",
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "rtk hook claude",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"$SUPERSET_HOME_DIR\" ] && [ -x \"$SUPERSET_HOME_DIR/hooks/notify.sh\" ] && \"$SUPERSET_HOME_DIR/hooks/notify.sh\" || true",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"$SUPERSET_HOME_DIR\" ] && [ -x \"$SUPERSET_HOME_DIR/hooks/notify.sh\" ] && \"$SUPERSET_HOME_DIR/hooks/notify.sh\" || true",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  }
+}

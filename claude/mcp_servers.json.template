@@ -1,0 +1,94 @@
+{
+  "mcpServers": {
+    "linear": {
+      "type": "http",
+      "url": "https://mcp.linear.app/mcp"
+    },
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    },
+    "hex": {
+      "type": "http",
+      "url": "https://hc.hex.tech/mcp"
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "<YOUR_CONTEXT7_API_KEY>"
+      }
+    },
+    "pylon": {
+      "type": "http",
+      "url": "https://mcp.usepylon.com"
+    },
+    "skyvern": {
+      "type": "http",
+      "url": "https://api.skyvern.com/mcp/",
+      "headers": {
+        "x-api-key": "<YOUR_SKYVERN_API_KEY>"
+      }
+    },
+    "skyvern-staging": {
+      "type": "http",
+      "url": "https://api-staging.skyvern.com/mcp/",
+      "headers": {
+        "x-api-key": "<YOUR_SKYVERN_STAGING_API_KEY>"
+      }
+    },
+    "skyvern-local": {
+      "command": "<PATH_TO_SKYVERN_UV_TOOL_PYTHON>",
+      "args": ["-m", "skyvern", "run", "mcp"],
+      "env": {
+        "SKYVERN_API_KEY": "<YOUR_LOCAL_SKYVERN_API_KEY>",
+        "SKYVERN_BASE_URL": "http://localhost:8000"
+      }
+    },
+    "datadog": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["datadog-mcp-server"],
+      "env": {
+        "DD_API_KEY": "<YOUR_DATADOG_API_KEY>",
+        "DD_APP_KEY": "<YOUR_DATADOG_APP_KEY>",
+        "DD_SITE": "us5.datadoghq.com"
+      }
+    },
+    "exa": {
+      "type": "http",
+      "url": "https://mcp.exa.ai/mcp",
+      "headers": {
+        "x-api-key": "<YOUR_EXA_API_KEY>"
+      }
+    },
+    "awslabs.redshift-mcp-server": {
+      "command": "uvx",
+      "args": ["awslabs.redshift-mcp-server@latest"],
+      "env": {
+        "AWS_PROFILE": "default",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "FASTMCP_LOG_LEVEL": "INFO"
+      },
+      "disabled": false,
+      "autoApprove": []
+    },
+    "superhuman-mail": {
+      "type": "http",
+      "url": "https://mcp.mail.superhuman.com/mcp"
+    },
+    "figma": {
+      "type": "http",
+      "url": "https://mcp.figma.com/mcp"
+    },
+    "slack-as-me": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "env": {
+        "SLACK_BOT_TOKEN": "<YOUR_SLACK_BOT_TOKEN>",
+        "SLACK_TEAM_ID": "<YOUR_SLACK_TEAM_ID>"
+      }
+    }
+  }
+}
