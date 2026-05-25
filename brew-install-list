@@ -1,41 +1,14 @@
-brew install tmux
-brew install ag
-brew install rg
-brew tap azure/functions\n\n
-brew install azure-functions-core-tools@3\n\n
-brew install azure-cli\n
-brew install --cask ~/Downloads/dotnet-sdk.rb
-brew install jq
-brew install --cask microsoft-azure-storage-explorer
-brew install --cask visual-studio-code\n
-brew list --cask
-brew install --cask postman
-brew install --cask postman dash insomnia
-brew install htop yarn coreutils starship
-brew install vim-plug
-brew search jdk
-brew info openjdk
-brew info openjdk@16
-brew install openjdk
-brew tap dockerhub
-brew cask install dockerhub
-brew cask install docker
-brew install --cask docker
-brew install mdless
-brew uninstall jdk
-brew install sdkman
-brew uninstall openjdk
-brew cask install intelliJ
-brew install --cask intelliJ
-brew install --cask intelliJ-idea
-brew install maven
-brew install --cask loom
-brew install helm@3.6.3
-brew search helm
-brew install --cask glogg
-brew install --cask klogg
-brew install poetry
-brew install pre-commit
-brew install docker
-brew install ezf
-brew install zoxide
+# Current package checklist. `install.sh` is the executable source of truth.
+
+brew install tmux tree jq wget fzf zoxide zsh ripgrep coreutils rtk git-lfs
+brew install gh
+brew install uv python@3.9 pypy pyenv poetry pre-commit black mypy ipython virtualenv python-build python-lsp-server
+brew install nvm
+npm install -g @openai/codex @earendil-works/pi-coding-agent @bitwarden/cli agent-browser pnpm @googleworkspace/cli
+brew install llm
+brew install duckdb csvkit jupyterlab poppler postgresql@14 redis
+brew install terraform helm k6 heroku/brew/heroku protobuf twilio/brew/twilio
+brew install microsoft/mssql-release/mssql-tools18
+brew install ffmpeg qrencode zbar deno lnav scc fswatch trurl tursodatabase/tap/turso trufflehog jsonschema keyring openjdk squirrel-lang mcp-publisher
+
+brew install --cask rectangle raycast alt-tab maccy jumpcut docker postman dbvisualizer ngrok notion discord signal loom todoist-app klogg warp windsurf codex iterm2 slack visual-studio-code vlc flux istat-menus chatgpt claude google-chrome linear-linear obsidian screen-studio superhuman tailscale superwhisper

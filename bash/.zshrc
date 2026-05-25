@@ -2,7 +2,7 @@
 # export PATH=$HOME/bin:/usr/local/bin:$PATH
 
 # Path to your oh-my-zsh installation.
-export ZSH="/Users/suchintan/.oh-my-zsh"
+export ZSH="$HOME/.oh-my-zsh"
 
 # Set name of the theme to load --- if set to "random", it will
 # load a random theme each time oh-my-zsh is loaded, in which case,
@@ -98,10 +98,18 @@ source $ZSH/oh-my-zsh.sh
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 #
-export HISTCONTROL=ignoredups:erasedups  # no duplicate entries
-export HISTSIZE=100000                   # big big history
-export HISTFILESIZE=100000               # big big history#
-setopt APPEND_HISTORY                    # append to history, don't overwrite it
+HISTSIZE=100000
+SAVEHIST=100000
+setopt APPEND_HISTORY
+setopt EXTENDED_HISTORY
+setopt INC_APPEND_HISTORY
+setopt SHARE_HISTORY
+setopt HIST_EXPIRE_DUPS_FIRST
+setopt HIST_IGNORE_ALL_DUPS
+setopt HIST_IGNORE_DUPS
+setopt HIST_IGNORE_SPACE                 # prefix sensitive commands with a space
+setopt HIST_REDUCE_BLANKS
+setopt HIST_SAVE_NO_DUPS
 #setopt PROMPT_SUBST
 #PROMPT='%n@%m: ${(%):-%~} '
 
@@ -117,54 +125,51 @@ alias plot='Rscript plot.r && open Rplots.pdf'
 alias cleanupPlot='rm plot.r && rm Rplots.pdf'
 alias pytest='python -m pytest'
 
+function codex-resume() {
+    local resume_id="$1"
+
+    if [[ -z "$resume_id" ]]; then
+        printf "Codex resume id: "
+        read -r resume_id
+    fi
+
+    if [[ -z "$resume_id" ]]; then
+        echo "Usage: codex-resume <resume-id>"
+        return 1
+    fi
+
+    codex -c model_reasoning_effort="xhigh" --ask-for-approval never --sandbox danger-full-access -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true resume "$resume_id"
+}
+
+function ikonomos-codex() {
+    CODEX_HOME="$HOME/.codex-ikonomos" codex "$@"
+}
+
 
 export PATH=$PATH:$HOME/bin
-# export PATH="/usr/local/anaconda3/bin:$PATH"  # commented out by conda initialize
-
-# >>> conda initialize >>>
-# !! Contents within this block are managed by 'conda init' !!
-#__conda_setup="$('/usr/local/anaconda3/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
-#if [ $? -eq 0 ]; then
-#    eval "$__conda_setup"
-#else
-#    if [ -f "/usr/local/anaconda3/etc/profile.d/conda.sh" ]; then
-#        . "/usr/local/anaconda3/etc/profile.d/conda.sh"
-#    else
-#        export PATH="/usr/local/anaconda3/bin:$PATH"
-#    fi
-#fi
-#unset __conda_setup
-# <<< conda initialize <<<
-
-#conda activate python373
 
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
 
-export MICRONAUT_ENVIRONMENTS=dev-suchintan
+[[ -f "$HOME/.zshrc_secrets" ]] && source "$HOME/.zshrc_secrets" # store all secrets here
 
-source ~/.zshrc_secrets # store all secrets here
-
-# automatic python virtual env with poetry
-function auto_poetry_shell {
-    if [ -f "pyproject.toml" ] ; then
-        source $(poetry env info --path)/bin/activate
+# automatic python virtual env
+function auto_python_env {
+    if [[ -f ".venv/bin/activate" ]]; then
+        source ".venv/bin/activate"
+    elif [[ -f "pyproject.toml" ]] && command -v poetry >/dev/null 2>&1; then
+        local poetry_env
+        poetry_env=$(poetry env info --path 2>/dev/null)
+        [[ -n "$poetry_env" && -f "$poetry_env/bin/activate" ]] && source "$poetry_env/bin/activate"
     fi
 }
 
-auto_poetry_shell
+auto_python_env
 
 #THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
-export SDKMAN_DIR="/Users/suchintan/.sdkman"
-[[ -s "/Users/suchintan/.sdkman/bin/sdkman-init.sh" ]] && source "/Users/suchintan/.sdkman/bin/sdkman-init.sh"
-
-alias aecs="aws ecs execute-command --cluster ecs-skyvern-cluster-staging --container ecs-skyvern-staging --command "/bin/bash" --interactive --task"
-alias aecp="aws ecs execute-command --cluster ecs-skyvern-cluster-production --container ecs-skyvern-worker-production --command "/bin/bash" --interactive --task"
-alias aets="aws ecs list-tasks --cluster ecs-skyvern-cluster-staging --query \"taskArns\" --output text | tee | sed 's/\// /g'"
-alias aetp="aws ecs list-tasks --cluster ecs-skyvern-cluster-production --query \"taskArns\" --output text | tee | sed 's/\// /g'"
-
-alias ssh_prod_api_cluster="aetp | awk '{print $NF}' | xargs -I {} sh -c 'aecp \"$@\"' sh {}"
+export SDKMAN_DIR="$HOME/.sdkman"
+[[ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]] && source "$HOME/.sdkman/bin/sdkman-init.sh"
 
 # Docker Aliases
 function dk() {
@@ -176,7 +181,7 @@ alias dk=dk
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 function cd {
     __zoxide_z "$@"
-    auto_poetry_shell
+    auto_python_env
 }
 
 eval "$(zoxide init zsh)"
@@ -187,8 +192,17 @@ eval "$(gh copilot alias -- zsh)"
 
 alias ai='ghcs'
 
-alias llms='llm --system "be very concise when answering, and try to just give the commandline argument if asked. Dont decorate the output in any markup"'
-alias llmq='llm --system "be very concise when answering, and try to just answer the question. Dont decorate the output in any markup"'
+alias llms='llm -c --system "be very concise when answering, and try to just give the commandline argument if asked. Dont decorate the output in any markup."'
+alias llmq='llm -c --system "be very concise when answering, and try to just answer the question. Dont decorate the output in any markup"'
 
-# Added by Windsurf
-export PATH="/Users/suchintan/.codeium/windsurf/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
+
+# bun completions
+[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
+# Browser-Use
+export PATH="$HOME/.browser-use-env/bin:$PATH"
