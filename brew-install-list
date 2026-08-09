@@ -11,4 +11,4 @@ brew install terraform helm k6 heroku/brew/heroku protobuf twilio/brew/twilio
 brew install microsoft/mssql-release/mssql-tools18
 brew install ffmpeg qrencode zbar deno lnav scc fswatch trurl tursodatabase/tap/turso trufflehog jsonschema keyring openjdk squirrel-lang mcp-publisher
 
-brew install --cask rectangle raycast alt-tab maccy jumpcut docker postman dbvisualizer ngrok notion discord signal loom todoist-app klogg warp windsurf codex iterm2 slack visual-studio-code vlc flux istat-menus chatgpt claude google-chrome linear-linear obsidian screen-studio superhuman tailscale superwhisper
+brew install --cask rectangle raycast alt-tab maccy jumpcut docker-desktop postman dbvisualizer ngrok notion discord signal loom todoist-app klogg warp windsurf cursor codex iterm2 slack visual-studio-code pycharm vlc flux istat-menus chatgpt claude google-chrome linear-linear obsidian screen-studio superhuman tailscale superwhisper superset fathom okta-verify displaylink microsoft-edge microsoft-teams microsoft-azure-storage-explorer telegram windscribe zoom

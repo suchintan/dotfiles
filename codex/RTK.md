@@ -10,6 +10,7 @@ Examples:
 
 ```bash
 rtk git status
+rtk cargo test
 rtk npm run build
 rtk pytest -q
 ```
@@ -17,9 +18,9 @@ rtk pytest -q
 ## Meta Commands
 
 ```bash
-rtk gain
-rtk gain --history
-rtk proxy <cmd>
+rtk gain            # Token savings analytics
+rtk gain --history  # Recent command savings history
+rtk proxy <cmd>     # Run raw command without filtering
 ```
 
 ## Verification

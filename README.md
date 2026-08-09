@@ -8,13 +8,15 @@ Personal macOS dotfiles and public-safe agent setup.
 ./install.sh
 ```
 
-The installer symlinks shell, git, tmux, vim, Claude Code, Codex, and shared public agent skill files into `~`.
+The installer symlinks shell, git, tmux, vim, Claude Code, Codex, omp, Herdr, and shared public agent skill files into `~`.
 
 ## Agent Config
 
 - `AGENTS.md` contains tool-agnostic repo instructions.
 - `claude/` contains Claude Code instructions, settings, hooks, and MCP templates.
-- `codex/` contains Codex user instructions, RTK guidance, and a MCP config template.
+- `codex/` contains Codex user instructions, RTK guidance, agent profiles, hooks, and a MCP config template.
+- `omp/` contains the Oh My Pi agent config and codex subagent definitions (`~/.omp/agent/`).
+- `herdr/` contains the Herdr terminal-multiplexer config (`~/.config/herdr/config.toml`).
 - `agents/skills/` contains public-safe skills shared by Claude Code and Codex.
 
 Real MCP credentials are not committed. Use:

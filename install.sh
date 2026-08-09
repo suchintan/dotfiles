@@ -17,6 +17,13 @@ rm -f ~/.claude/RTK.md
 rm -f ~/.claude/hooks/bash-history.sh
 rm -f ~/.codex/AGENTS.md
 rm -f ~/.codex/RTK.md
+rm -f ~/.claude/LOOP.md
+rm -f ~/.claude/statusline-command.sh
+rm -f ~/.codex/hooks.json
+rm -rf ~/.codex/agents
+rm -f ~/.config/herdr/config.toml
+rm -f ~/.omp/agent/config.yml
+rm -rf ~/.omp/agent/agents
 
 CURRENT_DIR=$(pwd)
 
@@ -39,6 +46,15 @@ ln -s "$CURRENT_DIR/claude/RTK.md" ~/.claude/RTK.md
 ln -s "$CURRENT_DIR/claude/hooks/bash-history.sh" ~/.claude/hooks/bash-history.sh
 ln -s "$CURRENT_DIR/codex/AGENTS.md" ~/.codex/AGENTS.md
 ln -s "$CURRENT_DIR/codex/RTK.md" ~/.codex/RTK.md
+ln -s "$CURRENT_DIR/claude/LOOP.md" ~/.claude/LOOP.md
+ln -s "$CURRENT_DIR/claude/statusline-command.sh" ~/.claude/statusline-command.sh
+ln -s "$CURRENT_DIR/codex/hooks.json" ~/.codex/hooks.json
+ln -s "$CURRENT_DIR/codex/agents" ~/.codex/agents
+mkdir -p ~/.config/herdr
+mkdir -p ~/.omp/agent
+ln -s "$CURRENT_DIR/herdr/config.toml" ~/.config/herdr/config.toml
+ln -s "$CURRENT_DIR/omp/config.yml" ~/.omp/agent/config.yml
+ln -s "$CURRENT_DIR/omp/agents" ~/.omp/agent/agents
 touch ~/.zshrc_secrets
 
 echo "=== Installing public agent skills ==="
@@ -69,6 +85,9 @@ brew install tree
 brew install jq
 brew install wget
 brew install fzf
+
+# Terminal workspace manager for AI agents (installs to ~/.local/bin)
+command -v herdr >/dev/null 2>&1 || curl -fsSL https://herdr.dev/install.sh | sh
 brew install zoxide
 brew install zsh
 brew install ripgrep
@@ -159,7 +178,7 @@ brew install --cask raycast
 brew install --cask alt-tab
 brew install --cask maccy
 brew install --cask jumpcut
-brew install --cask docker
+brew install --cask docker-desktop
 brew install --cask postman
 brew install --cask dbvisualizer
 brew install --cask ngrok
@@ -171,10 +190,12 @@ brew install --cask todoist-app
 brew install --cask klogg
 brew install --cask warp
 brew install --cask windsurf
+brew install --cask cursor
 brew install --cask codex
 brew install --cask iterm2
 brew install --cask slack
 brew install --cask visual-studio-code
+brew install --cask pycharm
 brew install --cask vlc
 brew install --cask flux
 brew install --cask istat-menus
@@ -187,6 +208,16 @@ brew install --cask screen-studio
 brew install --cask superhuman
 brew install --cask tailscale
 brew install --cask superwhisper
+brew install --cask superset
+brew install --cask fathom
+brew install --cask okta-verify
+brew install --cask displaylink
+brew install --cask microsoft-edge
+brew install --cask microsoft-teams
+brew install --cask microsoft-azure-storage-explorer
+brew install --cask telegram
+brew install --cask windscribe
+brew install --cask zoom
 
 echo "=== macOS preferences ==="
 

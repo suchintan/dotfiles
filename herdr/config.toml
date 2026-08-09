@@ -1,0 +1,51 @@
+# Herdr config — full reference: herdr --default-config
+# Apply changes with: herdr server reload-config
+
+[ui]
+agent_panel_sort = "spaces"
+
+# Sidebar sizing (columns). Width auto-scales with content between min/max;
+# raise/lower these to make the left panel bigger or smaller. prefix+b collapses.
+sidebar_width = 30
+sidebar_min_width = 20
+sidebar_max_width = 44
+
+# Agents panel rows: agent name first and bright; workspace/tab context second.
+# Tokens: state_icon, state_text, workspace, tab, pane, agent, terminal_title[_stripped].
+[ui.sidebar.agents]
+rows = [
+    ["state_icon", { token = "agent", fg = "#cdd6f4", bold = true, dim = false }],
+    ["workspace", "tab"],
+]
+
+[keys]
+# Tab switching on tab / shift+tab (defaults were prefix+n / prefix+p).
+next_tab = "prefix+tab"
+previous_tab = "prefix+shift+tab"
+
+# These two held prefix+tab / prefix+shift+tab by default — unbind them so
+# tab switching wins. Pane focus still works via prefix+h/j/k/l and mouse.
+cycle_pane_next = ""
+cycle_pane_previous = ""
+
+# Worktrees. new_worktree ships as prefix+shift+g; open/remove ship unbound.
+open_worktree = "prefix+shift+o"
+remove_worktree = "prefix+shift+k"
+
+# Jump straight to a workspace by its sidebar number.
+switch_workspace = "prefix+shift+1..9"
+
+# Open a project directory as a new workspace (fzf popup).
+[[keys.command]]
+key = "prefix+shift+f"
+type = "popup"
+description = "open project as workspace"
+command = 'sel=$(ls -d "$HOME"/Development/*/ | fzf --prompt="open project> ") && herdr workspace create --cwd "$sel" --label "$(basename "$sel")" --focus'
+width = "60%"
+height = "50%"
+
+[worktrees]
+# Herdr-created checkouts land at <directory>/<repo>/<branch-slug>.
+# Visible location (vs default ~/.herdr/worktrees) so multi-GB Skyvern
+# checkouts are easy to audit and clean up.
+directory = "~/Development/worktrees"

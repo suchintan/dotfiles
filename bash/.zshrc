@@ -141,9 +141,155 @@ function codex-resume() {
     codex -c model_reasoning_effort="xhigh" --ask-for-approval never --sandbox danger-full-access -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true resume "$resume_id"
 }
 
+function codex-session-for-worktree() {
+    local codex_home="${CODEX_HOME:-$HOME/.codex}"
+    local state_db="$codex_home/state_5.sqlite"
+    local id_only=0
+
+    if [[ "$1" == "--id-only" ]]; then
+        id_only=1
+        shift
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "codex-session-for-worktree: python3 is required"
+        return 1
+    fi
+    if [[ ! -f "$state_db" ]]; then
+        echo "codex-session-for-worktree: Codex state DB not found at $state_db"
+        return 1
+    fi
+
+    CODEX_STATE_DB="$state_db" CODEX_ID_ONLY="$id_only" python3 - "$PWD" <<'PY'
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+
+
+def run(args, cwd=None):
+    try:
+        return subprocess.check_output(args, cwd=cwd, text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+
+start_cwd = os.path.abspath(sys.argv[1])
+repo = run(["git", "rev-parse", "--show-toplevel"], start_cwd)
+if not repo:
+    print("codex-session-for-worktree: not inside a git worktree", file=sys.stderr)
+    sys.exit(1)
+
+branch = run(["git", "branch", "--show-current"], repo)
+head = run(["git", "rev-parse", "HEAD"], repo)
+origin = run(["git", "config", "--get", "remote.origin.url"], repo)
+status = run(["git", "status", "--porcelain=v1"], repo)
+changed = []
+for line in status.splitlines():
+    path = line[3:].strip()
+    if " -> " in path:
+        path = path.split(" -> ", 1)[1]
+    if path:
+        changed.append(path)
+
+db_path = os.environ["CODEX_STATE_DB"]
+id_only = os.environ.get("CODEX_ID_ONLY") == "1"
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+rows = conn.execute(
+    """
+    select id, rollout_path, cwd, title, git_sha, git_branch, git_origin_url, updated_at
+    from threads
+    where archived = 0
+    order by updated_at desc
+    limit 500
+    """
+).fetchall()
+
+matches = []
+for row in rows:
+    cwd = os.path.abspath(row["cwd"] or "")
+    in_repo = cwd == repo or cwd.startswith(repo + os.sep) or start_cwd == cwd
+    branch_match = bool(branch and row["git_branch"] == branch)
+    head_match = bool(head and row["git_sha"] == head)
+    origin_match = bool(origin and row["git_origin_url"] == origin)
+
+    path_hits = 0
+    rollout_path = row["rollout_path"] or ""
+    if changed and rollout_path and os.path.exists(rollout_path):
+        try:
+            with open(rollout_path, "r", encoding="utf-8", errors="ignore") as fh:
+                rollout = fh.read()
+            path_hits = sum(1 for path in changed if path in rollout)
+        except OSError:
+            path_hits = 0
+
+    if in_repo or branch_match or head_match or origin_match or path_hits:
+        age_penalty = max(0, int(time.time()) - int(row["updated_at"] or 0)) / 86400
+        score = (
+            (100 if in_repo else 0)
+            + (40 if branch_match else 0)
+            + (30 if head_match else 0)
+            + (20 if origin_match else 0)
+            + (25 * path_hits)
+            - min(age_penalty, 30)
+        )
+        matches.append((score, path_hits, row))
+
+if not matches:
+    print("codex-session-for-worktree: no matching Codex session found", file=sys.stderr)
+    sys.exit(1)
+
+matches.sort(key=lambda item: (item[0], item[2]["updated_at"]), reverse=True)
+score, path_hits, best = matches[0]
+
+print(best["id"])
+if id_only:
+    sys.exit(0)
+print(f"title: {best['title']}")
+print(f"cwd: {best['cwd']}")
+print(f"branch: {best['git_branch'] or '(unknown)'}")
+print(f"head: {best['git_sha'] or '(unknown)'}")
+print(f"dirty_files: {len(changed)}")
+print(f"dirty_file_hits_in_rollout: {path_hits}")
+print(f"updated_at: {time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(int(best['updated_at'])))}")
+
+if len(matches) > 1:
+    print("alternates:")
+    for alt_score, alt_hits, alt in matches[1:4]:
+        print(f"  {alt['id']} hits={alt_hits} updated={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(alt['updated_at'])))} title={alt['title'][:80]}")
+PY
+}
+
+alias codex-worktree-session=codex-session-for-worktree
+
+function codex-resume-worktree() {
+    local session_id
+    session_id="$(codex-session-for-worktree --id-only)" || return $?
+    if [[ -z "$session_id" ]]; then
+        echo "codex-resume-worktree: could not determine a session id"
+        return 1
+    fi
+    codex -c model_reasoning_effort="xhigh" --ask-for-approval never --sandbox danger-full-access -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true resume "$session_id"
+}
+
+alias codex-worktree-resume=codex-resume-worktree
+
 function ikonomos-codex() {
     CODEX_HOME="$HOME/.codex-ikonomos" codex "$@"
 }
+
+function skyvern-ai-codex() {
+    CODEX_HOME="$HOME/.codex-skyvern-ai" codex "$@"
+}
+
+function skyvern-ai-s-codex() {
+    CODEX_HOME="$HOME/.codex-skyvern-ai-s" codex "$@"
+}
+
+alias codex-skyvern-ai=skyvern-ai-codex
+alias codex-skyvern-ai-s=skyvern-ai-s-codex
 
 
 export PATH=$PATH:$HOME/bin
