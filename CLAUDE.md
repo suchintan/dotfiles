@@ -13,7 +13,7 @@ Public-safe personal dotfiles repo for macOS. Configs are organized by tool in s
 - `bash/` — `.zshrc` (primary shell), `.zprofile` (login shell PATH), `.bashrc` (legacy/fallback), `.profile`
 - `vim/` — `.vimrc`, `.ideavimrc`, `.vim/` directory with vim-plug plugins
 - `tmux/` — `.tmux.conf` (prefix is `C-a`, not `C-b`)
-- `git/` — `.gitconfig` with custom aliases and branch naming conventions
+- `git/` — `.gitconfig` with custom aliases and branch naming conventions; `hooks/post-checkout` worktree-setup hook
 - `claude/` — Claude Code config (`CLAUDE.md`, `settings.json`, `mcp_servers.json.template`, hooks, RTK guide)
 - `codex/` — Codex user instructions, RTK guide, and public-safe `config.toml.template`
 - `agents/` — Public-safe shared skills and the skill symlink sync script
@@ -43,4 +43,5 @@ Public-safe personal dotfiles repo for macOS. Configs are organized by tool in s
 - **`.zshrc` overrides `cd`**: It uses `zoxide` under the hood and auto-activates `.venv` or poetry virtualenvs.
 - **Shell history**: `.zshrc` ignores commands prefixed with a leading space. Use that for token-bearing commands.
 - After modifying any dotfile, changes take effect immediately (symlinked). Shell restart needed for `.zshrc` changes.
+- **Worktree setup hook**: `git/hooks/post-checkout` chains the git-lfs hook, then runs a repo's `.superset/config.json` `setup` commands (with `SUPERSET_ROOT_PATH` set to the main checkout) when a new linked worktree is created — so herdr/CLI worktrees match Superset worktrees. Copy it into `<repo>/.git/hooks/` and `chmod +x`; do not symlink (git-lfs rewrites hooks in place).
 - Before committing agent config changes, run a secret-pattern scan over the diff.

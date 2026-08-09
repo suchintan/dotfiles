@@ -12,6 +12,7 @@ sidebar_max_width = 44
 
 # Agents panel rows: agent name first and bright; workspace/tab context second.
 # Tokens: state_icon, state_text, workspace, tab, pane, agent, terminal_title[_stripped].
+show_agent_labels_on_pane_borders = false
 [ui.sidebar.agents]
 rows = [
     ["state_icon", { token = "agent", fg = "#cdd6f4", bold = true, dim = false }],
@@ -49,3 +50,10 @@ height = "50%"
 # Visible location (vs default ~/.herdr/worktrees) so multi-GB Skyvern
 # checkouts are easy to audit and clean up.
 directory = "~/Development/worktrees"
+
+[ui.toast]
+delivery = "off"
+
+[theme]
+name = "catppuccin"
+auto_switch = false

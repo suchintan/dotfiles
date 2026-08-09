@@ -1,0 +1,33 @@
+#!/bin/sh
+# post-checkout: git-lfs passthrough + superset-parity worktree setup.
+# Canonical copy: ~/Development/dotfiles/git/hooks/post-checkout
+# Install: cp into <repo>/.git/hooks/post-checkout && chmod +x
+#
+# Args: $1 = previous HEAD, $2 = new HEAD, $3 = 1 for branch checkout.
+
+# --- git-lfs (verbatim from the hook git-lfs installs; keep the invocation
+# --- line so `git lfs install` recognizes and does not rewrite this file) ---
+command -v git-lfs >/dev/null 2>&1 || { printf >&2 "\n%s\n\n" "This repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'post-checkout' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks')."; exit 2; }
+git lfs post-checkout "$@"
+lfs_rc=$?
+
+# --- superset-parity worktree setup ---
+# When a NEW linked worktree is created (git worktree add — via herdr, the
+# CLI, or any tool), run the repo's .superset/config.json "setup" commands
+# in the worktree, with SUPERSET_ROOT_PATH pointing at the main checkout.
+prev="${1:-}"; flag="${3:-}"
+[ "$flag" = "1" ] || exit "$lfs_rc"
+[ "$prev" = "0000000000000000000000000000000000000000" ] || exit "$lfs_rc"
+gitdir="$(git rev-parse --git-dir 2>/dev/null)" || exit "$lfs_rc"
+common="$(git rev-parse --git-common-dir 2>/dev/null)" || exit "$lfs_rc"
+[ "$gitdir" != "$common" ] || exit "$lfs_rc"   # linked worktrees only, not clones
+
+SUPERSET_ROOT_PATH="$(cd "$(dirname "$common")" && pwd)"
+export SUPERSET_ROOT_PATH
+cfg="$SUPERSET_ROOT_PATH/.superset/config.json"
+[ -f "$cfg" ] || exit "$lfs_rc"
+command -v jq >/dev/null 2>&1 || { echo "post-checkout: jq not found; skipped worktree setup" >&2; exit "$lfs_rc"; }
+
+echo "post-checkout: running .superset/config.json setup for new worktree" >&2
+jq -r '.setup // [] | join("\n")' "$cfg" | sh -e || echo "post-checkout: worktree setup reported errors" >&2
+exit "$lfs_rc"
