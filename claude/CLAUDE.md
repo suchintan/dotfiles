@@ -36,6 +36,13 @@ This section is the **canonical source** for all personal configuration. Skills 
 - Do not apply it to creative or marketing copy, or when I ask for a specific voice.
 - Full rules and examples live in the `asd-ste100` skill. Use that skill for explicit rewrite passes ("simplify this", "STE100 rewrite", "reduce ambiguity").
 
+# Final-Message Contract
+
+- I often see only the final message of a turn (subagent results, exec runs, notifications, scrolled TUIs). Interim narration is not reliably shown to me.
+- Make the final message self-contained. Restate every conclusion, number, command, path, or table I need to act.
+- Never refer to earlier assistant messages ("as shown above", "see my previous message").
+- If a long artifact matters, write it to a file and give me the path.
+
 # Linear Ticket Tracking
 
 - Every code change MUST have an associated Linear ticket.

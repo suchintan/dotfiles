@@ -23,6 +23,7 @@ rm -f ~/.codex/hooks.json
 rm -rf ~/.codex/agents
 rm -f ~/.config/herdr/config.toml
 rm -f ~/.omp/agent/config.yml
+rm -f ~/.omp/agent/RULES.md
 rm -rf ~/.omp/agent/agents
 
 CURRENT_DIR=$(pwd)
@@ -54,6 +55,7 @@ mkdir -p ~/.config/herdr
 mkdir -p ~/.omp/agent
 ln -s "$CURRENT_DIR/herdr/config.toml" ~/.config/herdr/config.toml
 ln -s "$CURRENT_DIR/omp/config.yml" ~/.omp/agent/config.yml
+ln -s "$CURRENT_DIR/omp/RULES.md" ~/.omp/agent/RULES.md
 ln -s "$CURRENT_DIR/omp/agents" ~/.omp/agent/agents
 touch ~/.zshrc_secrets
 
