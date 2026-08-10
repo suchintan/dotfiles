@@ -36,6 +36,10 @@ remove_worktree = "prefix+shift+k"
 # Jump straight to a workspace by its sidebar number.
 switch_workspace = "prefix+shift+1..9"
 
+# Cycle through agent rows (blocked/done agents surface in the sidebar).
+next_agent = "prefix+a"
+previous_agent = "prefix+shift+a"
+
 # Open a project directory as a new workspace (fzf popup).
 [[keys.command]]
 key = "prefix+shift+f"
@@ -52,7 +56,9 @@ height = "50%"
 directory = "~/Development/worktrees"
 
 [ui.toast]
-delivery = "off"
+# Desktop notification when a background-workspace agent finishes or blocks.
+# "system" = macOS Notification Center; prefix+o jumps to the source pane.
+delivery = "system"
 
 [theme]
 name = "catppuccin"

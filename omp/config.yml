@@ -42,3 +42,5 @@ statusLine:
 setupVersion: 1
 dev: 
   autoqaConsent: denied
+browser: 
+  relay: true
