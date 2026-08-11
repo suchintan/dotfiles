@@ -92,4 +92,3 @@ Before pushing changes and opening a PR, ALWAYS run these steps in order. (Excep
 - Only do this once per PR — do not re-post on subsequent pushes to the same PR.
 
 @RTK.md
-@LOOP.md
