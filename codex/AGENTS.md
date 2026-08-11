@@ -21,6 +21,11 @@
 - Spawned Codex worker subagents must NOT run git at all (no add/commit/amend/push) — the orchestrating session owns git. (A worker once amended a pushed commit and force-pushed a PR that was under review.)
 - In interactive sessions, after completing requested code changes, `git commit` and `git push` to the current working branch without asking (subject to the gates above), unless the user says not to.
 
+# User-Facing Writing
+
+- Before drafting or revising prose for people, read and apply the `writing-user-facing-content` skill. This includes Notion documents, Slack messages, emails, customer updates, announcements, and similar content.
+- Use the skill with the requested voice and channel. For technical prose, apply it together with the ASD-STE100 guidance in `~/.claude/CLAUDE.md`.
+
 # Linear Ticket Tracking
 
 - Every code change MUST have an associated Linear ticket.
