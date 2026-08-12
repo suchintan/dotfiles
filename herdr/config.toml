@@ -1,3 +1,4 @@
+onboarding = false
 # Herdr config — full reference: herdr --default-config
 # Apply changes with: herdr server reload-config
 

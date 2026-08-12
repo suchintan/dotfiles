@@ -4,7 +4,8 @@
       {
         "hooks": [
           {
-            "command": "SUPERSET_AGENT_ID=codex \"/Users/suchintan/.superset/hooks/notify.sh\"",
+            "command": "bash '/Users/suchintan/.codex/herdr-agent-state.sh' session",
+            "timeout": 10,
             "type": "command"
           }
         ]
@@ -12,9 +13,8 @@
       {
         "hooks": [
           {
-            "command": "bash '/Users/suchintan/.codex/herdr-agent-state.sh' session",
-            "timeout": 10,
-            "type": "command"
+            "type": "command",
+            "command": "[ -n \"$SUPERSET_HOME_DIR\" ] && [ -x \"$SUPERSET_HOME_DIR/hooks/notify.sh\" ] && SUPERSET_AGENT_ID=codex \"$SUPERSET_HOME_DIR/hooks/notify.sh\" || true"
           }
         ]
       }
@@ -23,8 +23,8 @@
       {
         "hooks": [
           {
-            "command": "SUPERSET_AGENT_ID=codex \"/Users/suchintan/.superset/hooks/notify.sh\"",
-            "type": "command"
+            "type": "command",
+            "command": "[ -n \"$SUPERSET_HOME_DIR\" ] && [ -x \"$SUPERSET_HOME_DIR/hooks/notify.sh\" ] && SUPERSET_AGENT_ID=codex \"$SUPERSET_HOME_DIR/hooks/notify.sh\" || true"
           }
         ]
       }
@@ -33,8 +33,8 @@
       {
         "hooks": [
           {
-            "command": "SUPERSET_AGENT_ID=codex \"/Users/suchintan/.superset/hooks/notify.sh\"",
-            "type": "command"
+            "type": "command",
+            "command": "[ -n \"$SUPERSET_HOME_DIR\" ] && [ -x \"$SUPERSET_HOME_DIR/hooks/notify.sh\" ] && SUPERSET_AGENT_ID=codex \"$SUPERSET_HOME_DIR/hooks/notify.sh\" || true"
           }
         ]
       }
