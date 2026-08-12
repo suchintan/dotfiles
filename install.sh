@@ -17,7 +17,6 @@ rm -f ~/.claude/RTK.md
 rm -f ~/.claude/hooks/bash-history.sh
 rm -f ~/.codex/AGENTS.md
 rm -f ~/.codex/RTK.md
-rm -f ~/.claude/LOOP.md
 rm -f ~/.claude/statusline-command.sh
 rm -f ~/.codex/hooks.json
 rm -rf ~/.codex/agents
@@ -47,7 +46,6 @@ ln -s "$CURRENT_DIR/claude/RTK.md" ~/.claude/RTK.md
 ln -s "$CURRENT_DIR/claude/hooks/bash-history.sh" ~/.claude/hooks/bash-history.sh
 ln -s "$CURRENT_DIR/codex/AGENTS.md" ~/.codex/AGENTS.md
 ln -s "$CURRENT_DIR/codex/RTK.md" ~/.codex/RTK.md
-ln -s "$CURRENT_DIR/claude/LOOP.md" ~/.claude/LOOP.md
 ln -s "$CURRENT_DIR/claude/statusline-command.sh" ~/.claude/statusline-command.sh
 ln -s "$CURRENT_DIR/codex/hooks.json" ~/.codex/hooks.json
 ln -s "$CURRENT_DIR/codex/agents" ~/.codex/agents
