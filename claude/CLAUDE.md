@@ -36,6 +36,11 @@ This section is the **canonical source** for all personal configuration. Skills 
 - Do not apply it to creative or marketing copy, or when I ask for a specific voice.
 - Full rules and examples live in the `asd-ste100` skill. Use that skill for explicit rewrite passes ("simplify this", "STE100 rewrite", "reduce ambiguity").
 
+# User-Facing Writing
+
+- Before drafting or revising prose for people, read and apply the `writing-user-facing-content` skill. This includes Notion documents, Slack messages, emails, customer updates, announcements, and similar content.
+- Use the skill with the requested voice and channel. For technical prose, apply it together with the ASD-STE100 guidance above.
+
 # Final-Message Contract
 
 - I often see only the final message of a turn (subagent results, exec runs, notifications, scrolled TUIs). Interim narration is not reliably shown to me.
