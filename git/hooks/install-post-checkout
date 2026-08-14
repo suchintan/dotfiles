@@ -1,0 +1,2933 @@
+#!/bin/sh
+""":"
+for python in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [ -x "$python" ] && "$python" -I -E -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+        exec "$python" -I -E "$0" "$@"
+    fi
+done
+printf '%s\n' 'install-post-checkout: Python 3.10+ is required at a trusted system path' >&2
+exit 1
+# Python parses this closing polyglot delimiter.
+# shellcheck disable=SC2317
+":"""
+import sys as _bootstrap_sys
+
+if _bootstrap_sys.flags.isolated != 1 or _bootstrap_sys.flags.ignore_environment != 1:
+    raise SystemExit("install-post-checkout: isolated Python restart failed")
+
+sys = _bootstrap_sys
+del _bootstrap_sys
+
+import ctypes
+import errno
+import fcntl
+import hashlib
+import os
+import re
+import secrets
+import stat
+import subprocess
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Literal, Optional, Protocol
+
+
+ROOT_NAME = ".skyvern-worktree-hooks"
+LOCK_NAME = ".skyvern-worktree-hooks.lock"
+RUNTIME_NAME = "post-checkout"
+SETUP_NAME = "setup.sh"
+HELPER_NAME = "worktree_storage.py"
+VERSION_NAME = "version"
+LFS_NAME = "post-checkout-lfs"
+STAMP_PREFIX = "dotfiles-worktree-setup-success."
+SETUP_LOCK_PREFIX = "dotfiles-worktree-setup-lock."
+STAMP_TEMP_PREFIX = ".dotfiles-worktree-setup-stamp."
+STAMP_RECOVERY_PREFIX = "dotfiles-worktree-setup-stamp-recovery."
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+REGULAR_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
+MAX_FILE_SIZE = 16 * 1024 * 1024
+VERSION_PATTERN = re.compile(r"[0-9a-f]{64}")
+RUNTIME_PATH_PATTERN = re.compile(rb'^BUNDLE_PATH_HEX = "[0-9a-f]*"$', re.MULTILINE)
+RUNTIME_VERSION_PATTERN = re.compile(
+    rb'^BUNDLE_VERSION = "[0-9a-f]{64}"$', re.MULTILINE
+)
+TEMPLATE_PATH_LINE = b'BUNDLE_PATH_HEX = "__BUNDLE_PATH_HEX__"'
+TEMPLATE_VERSION_LINE = b'BUNDLE_VERSION = "__BUNDLE_VERSION__"'
+TEMPLATE_INTERPRETER_LINE = b'exec __PINNED_PYTHON_SHELL__ -I -E "$0" "$@"'
+MINIMUM_GIT_VERSION = (2, 36)
+SETUP_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+TRUSTED_GIT_CANDIDATES = (
+    "/opt/homebrew/bin/git",
+    "/usr/local/bin/git",
+    "/usr/bin/git",
+)
+TEMPLATE_GIT_PATH_LINE = b'PINNED_GIT_PATH_HEX = "__PINNED_GIT_PATH_HEX__"'
+TEMPLATE_GIT_IDENTITY_LINE = b'PINNED_GIT_IDENTITY = "__PINNED_GIT_IDENTITY__"'
+TEMPLATE_PYTHON_PATH_LINE = b'PINNED_PYTHON_PATH_HEX = "__PINNED_PYTHON_PATH_HEX__"'
+TEMPLATE_PYTHON_IDENTITY_LINE = b'PINNED_PYTHON_IDENTITY = "__PINNED_PYTHON_IDENTITY__"'
+TEMPLATE_COMMON_PATH_LINE = b'COMMON_GIT_PATH_HEX = "__COMMON_GIT_PATH_HEX__"'
+TEMPLATE_COMMON_IDENTITY_LINE = b'COMMON_GIT_IDENTITY = "__COMMON_GIT_IDENTITY__"'
+TEMPLATE_PRIMARY_IDENTITY_LINE = b'PRIMARY_ROOT_IDENTITY = "__PRIMARY_ROOT_IDENTITY__"'
+TEMPLATE_LFS_PRELUDE_LINE = b'LFS_PRELUDE: Union[bool, str] = "__LFS_PRELUDE__"'
+_git_executable: str | None = None
+_process_executable: tuple[bytes, tuple[int, int]] | None = None
+ELF_RENAMEAT2_SYSCALLS = {
+    (1, 1, 3): 353,
+    (1, 1, 40): 382,
+    (1, 2, 40): 382,
+    (1, 1, 20): 357,
+    (1, 2, 20): 357,
+    (1, 2, 22): 347,
+    (1, 1, 62): 0x40000000 | 316,
+    (1, 1, 243): 276,
+    (2, 1, 62): 316,
+    (2, 1, 183): 276,
+    (2, 2, 183): 276,
+    (2, 1, 21): 357,
+    (2, 2, 21): 357,
+    (2, 2, 22): 347,
+    (2, 1, 243): 276,
+}
+STOCK_LFS_HOOK = b"""#!/bin/sh
+command -v git-lfs >/dev/null 2>&1 || { printf >&2 "\\n%s\\n\\n" "This repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'post-checkout' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks')."; exit 2; }
+git lfs post-checkout "$@"
+"""
+
+
+class InstallError(Exception):
+    """Installation cannot continue without weakening an invariant."""
+
+
+class Digest(Protocol):
+    def update(self, content: bytes) -> None:
+        ...
+
+
+@dataclass(frozen=True)
+class DirectoryPin:
+    path: str
+    descriptor: int
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class InterpreterPin:
+    path: str
+    descriptor: int
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class GitPin:
+    path: str
+    descriptor: int
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class GitEntryPin:
+    descriptor: int
+    device: int
+    inode: int
+    mode: int
+    content: bytes | None
+
+
+@dataclass(frozen=True)
+class Repository:
+    root: DirectoryPin
+    git_entry: GitEntryPin
+    git_dir: DirectoryPin
+    common: DirectoryPin
+
+
+@dataclass(frozen=True)
+class SourceBundle:
+    setup: bytes
+    helper: bytes | None
+
+
+@dataclass(frozen=True)
+class HooksState:
+    configured: str | None
+    effective: str
+    worktrees: tuple[str, ...]
+    hook: tuple[int, int, int, bytes | None] | None
+
+
+@dataclass(frozen=True)
+class HookPin:
+    directory: DirectoryPin
+    descriptor: int
+    identity: tuple[int, int, int, bytes | None] | None
+
+
+@dataclass(frozen=True)
+class OpenFile:
+    descriptor: int
+    content: bytes
+
+
+@dataclass(frozen=True)
+class PathObject:
+    device: int
+    inode: int
+    mode: int
+    content: bytes | None
+    link_target: str | None
+
+
+def linux_renameat2_syscall_number(header: bytes) -> int:
+    if len(header) < 16 or header[:4] != b"\x7fELF":
+        raise OSError(errno.ENOSYS, "current executable has an invalid ELF header")
+    elf_class = header[4]
+    elf_data = header[5]
+    if elf_class not in {1, 2} or elf_data not in {1, 2}:
+        raise OSError(errno.ENOSYS, "current executable has an unsupported ELF format")
+    header_size = 52 if elf_class == 1 else 64
+    if len(header) < header_size:
+        raise OSError(errno.ENOSYS, "current executable has a truncated ELF header")
+    if header[6] != 1 or header[7] not in {0, 3} or header[8] != 0:
+        raise OSError(errno.ENOSYS, "current executable has an unsupported ELF ABI")
+    byte_order: Literal["little", "big"] = "little" if elf_data == 1 else "big"
+
+    def field(offset: int, size: int) -> int:
+        return int.from_bytes(header[offset : offset + size], byte_order)
+
+    machine = field(18, 2)
+    if field(16, 2) not in {2, 3} or field(20, 4) != 1:
+        raise OSError(errno.ENOSYS, "current executable is not a supported ELF image")
+    flags_offset = 36 if elf_class == 1 else 48
+    header_size_offset = 40 if elf_class == 1 else 52
+    if field(header_size_offset, 2) != header_size:
+        raise OSError(errno.ENOSYS, "current executable has an invalid ELF header size")
+    if machine == 40 and field(flags_offset, 4) & 0xFF000000 not in {
+        0x04000000,
+        0x05000000,
+    }:
+        raise OSError(errno.ENOSYS, "current ARM executable does not use EABI")
+    syscall_number = ELF_RENAMEAT2_SYSCALLS.get((elf_class, elf_data, machine))
+    if syscall_number is None:
+        raise OSError(
+            errno.ENOSYS,
+            "renameat2 syscall number is unsupported for current ELF identity "
+            f"class={elf_class}, data={elf_data}, machine={machine}",
+        )
+    return syscall_number
+
+
+def linux_process_elf_header(
+    executable_path: bytes,
+    executable_identity: tuple[int, int],
+    proc_path: bytes = b"/proc/self/exe",
+) -> bytes:
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(proc_path, os.O_RDONLY | os.O_CLOEXEC)
+        except OSError:
+            if not executable_path.startswith(b"/") or b"\0" in executable_path:
+                raise OSError(errno.ENOSYS, "pinned executable path is invalid")
+            descriptor = os.open(
+                executable_path,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (
+                opened.st_dev,
+                opened.st_ino,
+            )
+            != executable_identity
+        ):
+            raise OSError(
+                errno.ENOSYS,
+                "current executable does not match its pinned identity",
+            )
+        header = os.pread(descriptor, 64, 0)
+        if not header:
+            raise OSError(errno.ENOSYS, "current executable ELF header is unreadable")
+        return header
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def linux_renameat2(
+    library: object,
+    old_directory_fd: int,
+    old_name: bytes,
+    new_directory_fd: int,
+    new_name: bytes,
+    flags: int,
+    executable_path: bytes,
+    executable_identity: tuple[int, int],
+    proc_path: bytes = b"/proc/self/exe",
+) -> int:
+    function = getattr(library, "renameat2", None)
+    if function is not None:
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        function.restype = ctypes.c_int
+        return int(
+            function(
+                old_directory_fd,
+                old_name,
+                new_directory_fd,
+                new_name,
+                flags,
+            )
+        )
+    syscall_number = linux_renameat2_syscall_number(
+        linux_process_elf_header(executable_path, executable_identity, proc_path)
+    )
+    syscall = getattr(library, "syscall", None)
+    if syscall is None:
+        raise OSError(errno.ENOSYS, "libc does not export syscall")
+    syscall.restype = ctypes.c_long
+    return int(
+        syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_int(old_directory_fd),
+            ctypes.c_char_p(old_name),
+            ctypes.c_int(new_directory_fd),
+            ctypes.c_char_p(new_name),
+            ctypes.c_uint(flags),
+        )
+    )
+
+
+def fail(message: str) -> InstallError:
+    return InstallError(message)
+
+
+def trusted_path(executable: str) -> str:
+    directories = [os.path.dirname(executable), *SETUP_PATH.split(":")]
+    return ":".join(dict.fromkeys(directory for directory in directories if directory))
+
+
+def sanitized_git_environment(executable: str) -> dict[str, str]:
+    home = os.environ.get("HOME", "")
+    if not home or not os.path.isabs(home):
+        raise fail("HOME must be an absolute path for Git inspection")
+    return {
+        "HOME": home,
+        "PATH": trusted_path(executable),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+
+
+def run_git(
+    arguments: list[str],
+    *,
+    allowed: Iterable[int] = (0,),
+) -> subprocess.CompletedProcess[bytes]:
+    if _git_executable is None:
+        raise fail("trusted Git executable is not pinned")
+    result = subprocess.run(
+        [_git_executable, *arguments],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=sanitized_git_environment(_git_executable),
+    )
+    if result.returncode not in allowed:
+        detail = os.fsdecode(result.stderr).strip()
+        raise fail(detail or f"git {' '.join(arguments)} failed")
+    return result
+
+
+def require_supported_git() -> None:
+    result = run_git(["version"])
+    version = decode_git_record(result.stdout, "Git version")
+    match = re.fullmatch(
+        r"git version ([0-9]+)\.([0-9]+)(?:\.[0-9]+)?(?:[ .].*)?", version
+    )
+    if match is None:
+        raise fail(f"cannot parse Git version: {version!r}")
+    parsed = (int(match.group(1)), int(match.group(2)))
+    if parsed < MINIMUM_GIT_VERSION:
+        raise fail(
+            "Git 2.36 or newer is required for NUL-delimited worktree metadata "
+            f"(found {version})"
+        )
+
+
+def git(
+    repository: str, *arguments: str, allowed: Iterable[int] = (0,)
+) -> subprocess.CompletedProcess[bytes]:
+    return run_git(["-C", repository, *arguments], allowed=allowed)
+
+
+def decode_git_record(output: bytes, label: str) -> str:
+    if not output.endswith(b"\n"):
+        raise fail(f"git did not terminate {label} with one line feed")
+    return os.fsdecode(output[:-1])
+
+
+def decode_nul_records(output: bytes, label: str) -> list[str]:
+    if not output:
+        return []
+    if not output.endswith(b"\0"):
+        raise fail(f"git did not NUL-terminate {label}")
+    return [os.fsdecode(record) for record in output[:-1].split(b"\0")]
+
+
+def git_record(repository: str, *arguments: str) -> str:
+    return decode_git_record(git(repository, *arguments).stdout, "path")
+
+
+def resolve_git_path(record: str, base: str) -> str:
+    candidate = record if os.path.isabs(record) else os.path.join(base, record)
+    return os.path.realpath(candidate)
+
+
+def owner_mode(status: os.stat_result, mode: int, label: str) -> None:
+    if status.st_uid != os.geteuid() or stat.S_IMODE(status.st_mode) != mode:
+        raise fail(f"{label} must be owned by the installer with mode {mode:04o}")
+
+
+def no_shared_write(status: os.stat_result, label: str) -> None:
+    if status.st_uid != os.geteuid() or stat.S_IMODE(status.st_mode) & 0o022:
+        raise fail(f"{label} must not be group/world writable")
+
+
+def pin_directory(path: str, label: str) -> DirectoryPin:
+    path = os.path.realpath(path)
+    descriptor = -1
+    try:
+        before = os.lstat(path)
+        if not stat.S_ISDIR(before.st_mode):
+            raise fail(f"{label} is not a real directory: {path}")
+        descriptor = os.open(path, DIRECTORY_FLAGS)
+        opened = os.fstat(descriptor)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+        os.close(descriptor)
+        raise fail(f"{label} changed while it was pinned: {path}")
+    return DirectoryPin(path, descriptor, opened.st_dev, opened.st_ino)
+
+
+def pin_interpreter() -> InterpreterPin:
+    path = os.path.realpath(sys.executable)
+    if not os.path.isabs(path) or any(character in path for character in "\0\r\n"):
+        raise fail("the Python interpreter path cannot be encoded safely in the hook")
+    descriptor = -1
+    try:
+        before = os.lstat(path)
+        if not stat.S_ISREG(before.st_mode) or not before.st_mode & 0o111:
+            raise fail(f"Python interpreter is not an executable regular file: {path}")
+        descriptor = os.open(path, REGULAR_FLAGS)
+        opened = os.fstat(descriptor)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+        os.close(descriptor)
+        raise fail("Python interpreter changed while it was pinned")
+    return InterpreterPin(path, descriptor, opened.st_dev, opened.st_ino)
+
+
+def assert_interpreter_pin(pin: InterpreterPin) -> None:
+    opened = os.fstat(pin.descriptor)
+    try:
+        current = os.stat(pin.path, follow_symlinks=False)
+    except OSError as error:
+        raise fail(
+            f"Python interpreter changed during installation: {error}"
+        ) from error
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or (current.st_dev, current.st_ino) != (pin.device, pin.inode)
+        or (opened.st_dev, opened.st_ino) != (pin.device, pin.inode)
+    ):
+        raise fail("Python interpreter changed during installation")
+
+
+def pin_git_executable() -> GitPin:
+    for candidate in TRUSTED_GIT_CANDIDATES:
+        path = os.path.realpath(candidate)
+        descriptor = -1
+        try:
+            before = os.lstat(path)
+            if not stat.S_ISREG(before.st_mode) or not before.st_mode & 0o111:
+                continue
+            descriptor = os.open(path, REGULAR_FLAGS)
+            opened = os.fstat(descriptor)
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                os.close(descriptor)
+                continue
+            return GitPin(path, descriptor, opened.st_dev, opened.st_ino)
+        except FileNotFoundError:
+            continue
+        except Exception:
+            if descriptor >= 0:
+                os.close(descriptor)
+            raise
+    raise fail("Git was not found at a trusted absolute system path")
+
+
+def assert_git_pin(pin: GitPin) -> None:
+    opened = os.fstat(pin.descriptor)
+    try:
+        current = os.stat(pin.path, follow_symlinks=False)
+    except OSError as error:
+        raise fail(f"trusted Git executable changed: {error}") from error
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or not current.st_mode & 0o111
+        or (current.st_dev, current.st_ino) != (pin.device, pin.inode)
+        or (opened.st_dev, opened.st_ino) != (pin.device, pin.inode)
+    ):
+        raise fail("trusted Git executable changed during installation")
+
+
+def assert_absolute_pin(pin: DirectoryPin, label: str) -> None:
+    try:
+        current = os.stat(pin.path, follow_symlinks=False)
+        opened = os.fstat(pin.descriptor)
+    except OSError as error:
+        raise fail(f"{label} cannot be revalidated: {error}") from error
+    expected = (pin.device, pin.inode)
+    if (
+        not stat.S_ISDIR(current.st_mode)
+        or (current.st_dev, current.st_ino) != expected
+        or (opened.st_dev, opened.st_ino) != expected
+    ):
+        raise fail(f"{label} changed after it was pinned: {pin.path}")
+
+
+def pin_child_directory(
+    parent: DirectoryPin, name: str, mode: int, *, create: bool
+) -> DirectoryPin:
+    if create:
+        try:
+            os.mkdir(name, mode, dir_fd=parent.descriptor)
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise fail(f"cannot reserve {parent.path}/{name}: {error}") from error
+    descriptor = -1
+    try:
+        before = os.stat(name, dir_fd=parent.descriptor, follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode):
+            raise fail(f"expected a real directory: {parent.path}/{name}")
+        descriptor = os.open(name, DIRECTORY_FLAGS, dir_fd=parent.descriptor)
+        opened = os.fstat(descriptor)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+        os.close(descriptor)
+        raise fail(f"directory changed while opening: {parent.path}/{name}")
+    owner_mode(opened, mode, f"{parent.path}/{name}")
+    return DirectoryPin(
+        f"{parent.path}/{name}", descriptor, opened.st_dev, opened.st_ino
+    )
+
+
+def assert_child_pin(parent: DirectoryPin, child: DirectoryPin, name: str) -> None:
+    try:
+        current = os.stat(name, dir_fd=parent.descriptor, follow_symlinks=False)
+        opened = os.fstat(child.descriptor)
+    except OSError as error:
+        raise fail(
+            f"pinned directory {child.path} cannot be revalidated: {error}"
+        ) from error
+    expected = (child.device, child.inode)
+    if (
+        not stat.S_ISDIR(current.st_mode)
+        or (current.st_dev, current.st_ino) != expected
+        or (opened.st_dev, opened.st_ino) != expected
+    ):
+        raise fail(f"pinned directory changed: {child.path}")
+
+
+def read_fd(descriptor: int, label: str) -> bytes:
+    status = os.fstat(descriptor)
+    if not stat.S_ISREG(status.st_mode) or status.st_size > MAX_FILE_SIZE:
+        raise fail(f"{label} is not a bounded regular file")
+    content = os.pread(descriptor, status.st_size + 1, 0)
+    if len(content) != status.st_size:
+        raise fail(f"{label} changed while it was read")
+    return content
+
+
+def pin_git_entry(root: DirectoryPin, label: str = "primary checkout") -> GitEntryPin:
+    descriptor = -1
+    try:
+        before = os.stat(".git", dir_fd=root.descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(before.st_mode):
+            descriptor = os.open(".git", DIRECTORY_FLAGS, dir_fd=root.descriptor)
+            content = None
+        elif stat.S_ISREG(before.st_mode):
+            descriptor = os.open(".git", REGULAR_FLAGS, dir_fd=root.descriptor)
+            content = read_fd(descriptor, f"{label} .git file")
+        else:
+            raise fail(f"{label} .git entry has an unsafe type")
+        opened = os.fstat(descriptor)
+    except OSError as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise fail(
+            f"cannot pin {label} .git entry at {root.path!r}: {error}"
+        ) from error
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    if (before.st_dev, before.st_ino, before.st_mode) != (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_mode,
+    ):
+        os.close(descriptor)
+        raise fail(f"{label} .git entry changed while it was pinned")
+    return GitEntryPin(
+        descriptor, opened.st_dev, opened.st_ino, opened.st_mode, content
+    )
+
+
+def assert_repository_pins(repository: Repository) -> None:
+    assert_absolute_pin(repository.root, "primary checkout")
+    try:
+        current = os.stat(
+            ".git", dir_fd=repository.root.descriptor, follow_symlinks=False
+        )
+        opened = os.fstat(repository.git_entry.descriptor)
+    except OSError as error:
+        raise fail(
+            f"primary checkout .git entry cannot be revalidated: {error}"
+        ) from error
+    expected = (
+        repository.git_entry.device,
+        repository.git_entry.inode,
+        repository.git_entry.mode,
+    )
+    if (current.st_dev, current.st_ino, current.st_mode) != expected or (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_mode,
+    ) != expected:
+        raise fail("primary checkout .git entry changed after it was pinned")
+    if (
+        repository.git_entry.content is not None
+        and read_fd(repository.git_entry.descriptor, "primary checkout .git file")
+        != repository.git_entry.content
+    ):
+        raise fail("primary checkout .git file content changed after it was pinned")
+    assert_absolute_pin(repository.git_dir, "primary Git directory")
+    assert_absolute_pin(repository.common, "common Git directory")
+
+
+def checkout_root_from_path(requested: str, label: str) -> str:
+    current = os.path.realpath(requested)
+    if not os.path.isdir(current):
+        raise fail(f"{label} is not a directory: {requested}")
+    while True:
+        try:
+            status = os.stat(os.path.join(current, ".git"), follow_symlinks=False)
+        except FileNotFoundError:
+            status = None
+        if status is not None:
+            if stat.S_ISDIR(status.st_mode) or stat.S_ISREG(status.st_mode):
+                return current
+            raise fail(f"{label} .git entry has an unsafe type: {current}")
+        parent = os.path.dirname(current)
+        if parent == current:
+            raise fail(f"{label} is not inside a Git checkout: {requested}")
+        current = parent
+
+
+def resolve_repository(requested: str) -> Repository:
+    top = checkout_root_from_path(requested, "target repository")
+    root = pin_directory(top, "primary checkout")
+    git_entry = pin_git_entry(root)
+    git_dir: DirectoryPin | None = None
+    common: DirectoryPin | None = None
+    try:
+        git_dir_path = resolve_git_path(git_record(top, "rev-parse", "--git-dir"), top)
+        common_path = resolve_git_path(
+            git_record(top, "rev-parse", "--git-common-dir"), top
+        )
+        if git_dir_path != common_path:
+            raise fail(
+                f"expected a primary checkout, not a linked worktree: {requested}"
+            )
+        git_dir = pin_directory(git_dir_path, "primary Git directory")
+        common = pin_directory(common_path, "common Git directory")
+        if (git_dir.device, git_dir.inode) != (common.device, common.inode):
+            raise fail("primary Git directory does not equal the common Git directory")
+        no_shared_write(os.fstat(common.descriptor), "common Git directory")
+        repository = Repository(root, git_entry, git_dir, common)
+        assert_repository_pins(repository)
+        return repository
+    except Exception:
+        if common is not None:
+            os.close(common.descriptor)
+        if git_dir is not None:
+            os.close(git_dir.descriptor)
+        os.close(git_entry.descriptor)
+        os.close(root.descriptor)
+        raise
+
+
+def resolve_source_repository(requested: str) -> Repository:
+    top = checkout_root_from_path(requested, "installer source checkout")
+    root = pin_directory(top, "installer source checkout")
+    git_entry = pin_git_entry(root)
+    git_dir: DirectoryPin | None = None
+    common: DirectoryPin | None = None
+    try:
+        git_dir = pin_directory(
+            resolve_git_path(git_record(top, "rev-parse", "--git-dir"), top),
+            "installer source Git directory",
+        )
+        common = pin_directory(
+            resolve_git_path(git_record(top, "rev-parse", "--git-common-dir"), top),
+            "installer source common Git directory",
+        )
+        no_shared_write(
+            os.fstat(common.descriptor), "installer source common Git directory"
+        )
+        repository = Repository(root, git_entry, git_dir, common)
+        assert_repository_pins(repository)
+        return repository
+    except Exception:
+        if common is not None:
+            os.close(common.descriptor)
+        if git_dir is not None:
+            os.close(git_dir.descriptor)
+        os.close(git_entry.descriptor)
+        os.close(root.descriptor)
+        raise
+
+
+def pinned_git(
+    repository: Repository,
+    *arguments: str,
+    allowed: Iterable[int] = (0,),
+    work_tree: bool = False,
+) -> subprocess.CompletedProcess[bytes]:
+    assert_repository_pins(repository)
+    command = [f"--git-dir={repository.common.path}"]
+    if work_tree:
+        command.append(f"--work-tree={repository.root.path}")
+    result = run_git([*command, *arguments], allowed=allowed)
+    assert_repository_pins(repository)
+    return result
+
+
+def source_git(
+    repository: Repository,
+    *arguments: str,
+    allowed: Iterable[int] = (0,),
+) -> subprocess.CompletedProcess[bytes]:
+    assert_repository_pins(repository)
+    result = run_git(
+        [
+            f"--git-dir={repository.git_dir.path}",
+            f"--work-tree={repository.root.path}",
+            *arguments,
+        ],
+        allowed=allowed,
+    )
+    assert_repository_pins(repository)
+    return result
+
+
+def check_unfiltered(repository: Repository, relative: str) -> None:
+    head_result = pinned_git(
+        repository,
+        "check-attr",
+        "--source=HEAD",
+        "filter",
+        "--",
+        relative,
+        allowed=(0, 129),
+        work_tree=True,
+    )
+    if head_result.returncode == 0:
+        head_output = head_result.stdout
+    else:
+        if b"unknown option `source=HEAD'" not in head_result.stderr:
+            raise fail(os.fsdecode(head_result.stderr).strip())
+        index_status = pinned_git(
+            repository,
+            "diff-index",
+            "--cached",
+            "--quiet",
+            "HEAD",
+            "--",
+            allowed=(0, 1),
+            work_tree=True,
+        ).returncode
+        if index_status != 0:
+            raise fail(
+                "Git lacks check-attr --source and the index differs from HEAD; "
+                "cannot verify bundle attributes deterministically"
+            )
+        head_output = pinned_git(
+            repository,
+            "check-attr",
+            "--cached",
+            "filter",
+            "--",
+            relative,
+            work_tree=True,
+        ).stdout
+    worktree_output = pinned_git(
+        repository, "check-attr", "filter", "--", relative, work_tree=True
+    ).stdout
+    for source, output in (("HEAD", head_output), ("working tree", worktree_output)):
+        if output.rstrip(b"\r\n").endswith(b": filter: lfs"):
+            raise fail(
+                f"{relative} is Git LFS-filtered in {source}; "
+                "object pinning is unsupported"
+            )
+
+
+def head_has_path(repository: Repository, relative: str) -> bool:
+    return (
+        pinned_git(
+            repository,
+            "cat-file",
+            "-e",
+            f"HEAD:{relative}",
+            allowed=(0, 1, 128),
+        ).returncode
+        == 0
+    )
+
+
+def read_head_verified_source(
+    repository: Repository,
+    superset_fd: int,
+    name: str,
+    mode: int,
+    *,
+    required: bool,
+) -> bytes | None:
+    relative = f".superset/{name}"
+    in_head = head_has_path(repository, relative)
+    try:
+        worktree_status = os.stat(name, dir_fd=superset_fd, follow_symlinks=False)
+        in_worktree = True
+    except FileNotFoundError:
+        worktree_status = None
+        in_worktree = False
+    if not in_head and not in_worktree and not required:
+        return None
+    if not in_head or not in_worktree or worktree_status is None:
+        raise fail(f"tracked source is deleted, sparse, or unavailable: {relative}")
+    check_unfiltered(repository, relative)
+    tree = pinned_git(repository, "ls-tree", "HEAD", "--", relative).stdout
+    head_mode = os.fsdecode(tree).split(maxsplit=1)[0] if tree else ""
+    expected_head_mode = "100755" if mode == 0o755 else "100644"
+    if head_mode != expected_head_mode:
+        raise fail(f"{relative} has unsafe mode in HEAD")
+    if (
+        not stat.S_ISREG(worktree_status.st_mode)
+        or stat.S_IMODE(worktree_status.st_mode) != mode
+    ):
+        raise fail(f"{relative} has unsafe working-tree type or mode")
+    descriptor = -1
+    try:
+        descriptor = os.open(name, REGULAR_FLAGS, dir_fd=superset_fd)
+        content = read_fd(descriptor, relative)
+    except OSError as error:
+        raise fail(f"cannot pin {relative}: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    head_content = pinned_git(repository, "cat-file", "blob", f"HEAD:{relative}").stdout
+    if content != head_content:
+        raise fail(f"{relative} differs from HEAD")
+    return content
+
+
+def load_sources(repository: Repository) -> SourceBundle:
+    descriptor = -1
+    try:
+        status = os.stat(
+            ".superset", dir_fd=repository.root.descriptor, follow_symlinks=False
+        )
+        if not stat.S_ISDIR(status.st_mode):
+            raise fail(".superset must be a real directory")
+        descriptor = os.open(
+            ".superset", DIRECTORY_FLAGS, dir_fd=repository.root.descriptor
+        )
+        setup = read_head_verified_source(
+            repository, descriptor, SETUP_NAME, 0o755, required=True
+        )
+        assert setup is not None
+        helper = read_head_verified_source(
+            repository, descriptor, HELPER_NAME, 0o644, required=False
+        )
+        return SourceBundle(setup, helper)
+    except OSError as error:
+        raise fail(f"cannot pin canonical .superset directory: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def registered_worktrees(repository: Repository) -> tuple[str, ...]:
+    assert_repository_pins(repository)
+    previous = os.open(".", DIRECTORY_FLAGS)
+    try:
+        os.fchdir(repository.root.descriptor)
+        output = run_git(["-C", ".", "worktree", "list", "--porcelain", "-z"]).stdout
+    finally:
+        os.fchdir(previous)
+        os.close(previous)
+    assert_repository_pins(repository)
+    paths = []
+    for field in output.split(b"\0"):
+        if field.startswith(b"worktree "):
+            path = os.path.realpath(os.fsdecode(field[len(b"worktree ") :]))
+            if (
+                path == repository.common.path
+                and (repository.root.device, repository.root.inode)
+                != (repository.common.device, repository.common.inode)
+                and repository.git_entry.content is not None
+            ):
+                path = repository.root.path
+            if not os.path.isdir(path):
+                raise fail(f"registered worktree is unavailable: {path}")
+            paths.append(path)
+    if not paths:
+        raise fail("repository has no registered worktrees")
+    return tuple(paths)
+
+
+def configured_value(worktree: str) -> str | None:
+    scoped = git(
+        worktree,
+        "config",
+        "-z",
+        "--show-scope",
+        "--show-origin",
+        "--get-all",
+        "core.hooksPath",
+        allowed=(0, 1),
+    )
+    if scoped.returncode == 0:
+        fields = decode_nul_records(scoped.stdout, "scoped core.hooksPath")
+        if len(fields) % 3 != 0:
+            raise fail("scoped core.hooksPath output is malformed")
+        for scope, _origin, _value in zip(fields[0::3], fields[1::3], fields[2::3]):
+            if scope == "worktree":
+                raise fail(f"worktree-local core.hooksPath is unsafe: {worktree}")
+            if scope == "command":
+                raise fail(f"command-scope core.hooksPath is unsafe: {worktree}")
+    values = git(
+        worktree,
+        "config",
+        "-z",
+        "--get-all",
+        "core.hooksPath",
+        allowed=(0, 1),
+    )
+    if values.returncode == 1:
+        return None
+    decoded = decode_nul_records(values.stdout, "core.hooksPath")
+    if len(decoded) != 1:
+        raise fail(f"multiple core.hooksPath values are unsafe: {worktree}")
+    value = decoded[0]
+    if not os.path.isabs(value):
+        raise fail(f"relative core.hooksPath is unsafe: {value}")
+    return os.path.normpath(value)
+
+
+def read_hook_state(
+    hooks: DirectoryPin,
+) -> tuple[int, int, int, bytes | None] | None:
+    hook_fd = -1
+    try:
+        try:
+            hook_status = os.stat(
+                RUNTIME_NAME, dir_fd=hooks.descriptor, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(hook_status.st_mode):
+            return (
+                hook_status.st_dev,
+                hook_status.st_ino,
+                hook_status.st_mode,
+                None,
+            )
+        hook_fd = os.open(RUNTIME_NAME, REGULAR_FLAGS, dir_fd=hooks.descriptor)
+        opened = os.fstat(hook_fd)
+        return (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            read_fd(hook_fd, "effective post-checkout hook"),
+        )
+    finally:
+        if hook_fd >= 0:
+            os.close(hook_fd)
+
+
+def pin_hooks_directory(repository: Repository, path: str) -> DirectoryPin:
+    if not os.path.isabs(path):
+        raise fail("effective hooks path is not absolute")
+    path = os.path.abspath(os.path.normpath(path))
+    try:
+        relative = os.path.relpath(path, repository.common.path)
+        if relative == ".." or relative.startswith(f"..{os.sep}"):
+            raise fail("effective hooks path is outside the common Git directory")
+    except ValueError as error:
+        raise fail(
+            "effective hooks path is outside the common Git directory"
+        ) from error
+    if os.path.realpath(path) != path:
+        raise fail("effective hooks path contains a symlink")
+
+    current_fd = os.dup(repository.common.descriptor)
+    current_path = repository.common.path
+    try:
+        no_shared_write(os.fstat(current_fd), current_path)
+        if relative != ".":
+            for component in relative.split(os.sep):
+                status = os.stat(component, dir_fd=current_fd, follow_symlinks=False)
+                if not stat.S_ISDIR(status.st_mode):
+                    raise fail(
+                        f"hooks path ancestor is not a real directory: {component}"
+                    )
+                no_shared_write(status, f"hooks path ancestor {component}")
+                next_fd = os.open(component, DIRECTORY_FLAGS, dir_fd=current_fd)
+                os.close(current_fd)
+                current_fd = next_fd
+                current_path = os.path.join(current_path, component)
+        opened = os.fstat(current_fd)
+        return DirectoryPin(path, current_fd, opened.st_dev, opened.st_ino)
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def pin_hook(state: HooksState, hooks: DirectoryPin) -> HookPin:
+    descriptor = -1
+    try:
+        identity = read_hook_state(hooks)
+        if identity is not None:
+            if identity[3] is None:
+                raise fail("existing post-checkout hook requires manual review")
+            descriptor = os.open(RUNTIME_NAME, REGULAR_FLAGS, dir_fd=hooks.descriptor)
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino, opened.st_mode) != identity[:3]:
+                raise fail("post-checkout hook changed while it was pinned")
+            if read_fd(descriptor, "post-checkout hook") != identity[3]:
+                raise fail("post-checkout hook changed while it was pinned")
+        if identity != state.hook:
+            raise fail("effective post-checkout hook changed while it was pinned")
+        return HookPin(hooks, descriptor, identity)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+
+
+def assert_hook_pin(pin: HookPin) -> None:
+    assert_absolute_pin(pin.directory, "effective hooks directory")
+    current = read_hook_state(pin.directory)
+    if current != pin.identity:
+        raise fail("post-checkout hook changed during installation")
+    if pin.identity is not None:
+        opened = os.fstat(pin.descriptor)
+        if (opened.st_dev, opened.st_ino, opened.st_mode) != pin.identity[:3]:
+            raise fail("pinned post-checkout hook changed identity")
+        if read_fd(pin.descriptor, "pinned post-checkout hook") != pin.identity[3]:
+            raise fail("pinned post-checkout hook changed content")
+
+
+def inspect_hooks(repository: Repository) -> HooksState:
+    extension = git(
+        repository.root.path,
+        "config",
+        "--bool",
+        "extensions.worktreeConfig",
+        allowed=(0, 1),
+    )
+    if extension.returncode == 0 and decode_git_record(
+        extension.stdout, "extensions.worktreeConfig"
+    ) not in {"true", "false"}:
+        raise fail("extensions.worktreeConfig has an invalid value")
+    worktrees = registered_worktrees(repository)
+    unset = object()
+    configured: str | None | object = unset
+    effective: str | None = None
+    for worktree in worktrees:
+        value = configured_value(worktree)
+        if configured is unset:
+            configured = value
+        elif value != configured:
+            raise fail("core.hooksPath differs across registered worktrees")
+        raw_path = git_record(worktree, "rev-parse", "--git-path", "hooks")
+        resolved = os.path.abspath(
+            os.path.normpath(
+                raw_path
+                if os.path.isabs(raw_path)
+                else os.path.join(worktree, raw_path)
+            )
+        )
+        if effective is None:
+            effective = resolved
+        elif resolved != effective:
+            raise fail("effective hooks path differs across registered worktrees")
+    assert isinstance(configured, (str, type(None)))
+    assert effective is not None
+    default_path = os.path.join(repository.common.path, "hooks")
+    if configured is None and effective != default_path:
+        raise fail(
+            "default hooks path does not resolve inside the common Git directory"
+        )
+    hooks = pin_hooks_directory(repository, effective)
+    try:
+        hook = read_hook_state(hooks)
+    finally:
+        os.close(hooks.descriptor)
+    return HooksState(configured, effective, worktrees, hook)
+
+
+def add_version_part(digest: Digest, name: bytes, content: bytes) -> None:
+    digest.update(len(name).to_bytes(4, "big"))
+    digest.update(name)
+    digest.update(len(content).to_bytes(8, "big"))
+    digest.update(content)
+
+
+def normalized_runtime(content: bytes) -> bytes:
+    content, path_count = RUNTIME_PATH_PATTERN.subn(TEMPLATE_PATH_LINE, content)
+    content, version_count = RUNTIME_VERSION_PATTERN.subn(
+        TEMPLATE_VERSION_LINE, content
+    )
+    if path_count != 1 or version_count != 1:
+        if TEMPLATE_PATH_LINE in content and TEMPLATE_VERSION_LINE in content:
+            return content
+        raise fail("dispatcher metadata is invalid")
+    return content
+
+
+def content_version(
+    runtime: bytes,
+    setup: bytes,
+    helper: bytes | None,
+    lfs_hook: bytes | None,
+) -> str:
+    digest = hashlib.sha256(b"skyvern-worktree-hooks-v1\0")
+    add_version_part(digest, b"post-checkout", normalized_runtime(runtime))
+    add_version_part(digest, b"setup.sh", setup)
+    if helper is None:
+        add_version_part(digest, b"worktree-storage-absent", b"")
+    else:
+        add_version_part(digest, b"worktree_storage.py", helper)
+    if lfs_hook is None:
+        add_version_part(digest, b"post-checkout-lfs-absent", b"")
+    else:
+        add_version_part(digest, b"post-checkout-lfs", lfs_hook)
+    return digest.hexdigest()
+
+
+def render_interpreter(template: bytes, interpreter: InterpreterPin) -> bytes:
+    encoded = os.fsencode(interpreter.path)
+    if any(character in encoded for character in (b"\0", b"\r", b"\n")):
+        raise fail("the Python interpreter path cannot be encoded safely in the hook")
+    quoted = b"'" + encoded.replace(b"'", b"'\"'\"'") + b"'"
+    replacement = b"exec " + quoted + b' -I -E "$0" "$@"'
+    rendered, count = template.replace(
+        TEMPLATE_INTERPRETER_LINE, replacement
+    ), template.count(TEMPLATE_INTERPRETER_LINE)
+    if count != 1:
+        raise fail("runtime interpreter placeholder is invalid")
+    rendered = replace_template_line(
+        rendered,
+        TEMPLATE_PYTHON_PATH_LINE,
+        f'PINNED_PYTHON_PATH_HEX = "{encoded.hex()}"'.encode(),
+    )
+    return replace_template_line(
+        rendered,
+        TEMPLATE_PYTHON_IDENTITY_LINE,
+        (
+            f'PINNED_PYTHON_IDENTITY = "{interpreter.device:x}:'
+            f'{interpreter.inode:x}"'
+        ).encode(),
+    )
+
+
+def shell_quote(content: bytes) -> bytes:
+    return b"'" + content.replace(b"'", b"'\"'\"'") + b"'"
+
+
+def render_lfs_runtime(
+    template: bytes,
+    interpreter: InterpreterPin,
+    lfs_hook: bytes | None,
+) -> bytes:
+    rendered = replace_template_line(
+        template,
+        TEMPLATE_LFS_PRELUDE_LINE,
+        (
+            b"LFS_PRELUDE: Union[bool, str] = True"
+            if lfs_hook is not None
+            else b"LFS_PRELUDE: Union[bool, str] = False"
+        ),
+    )
+    if lfs_hook is None:
+        return rendered
+    if lfs_hook != STOCK_LFS_HOOK or not lfs_hook.endswith(b"\n"):
+        raise fail("LFS-compatible dispatcher requires the exact stock LFS hook")
+    delimiter = b'\n":"""\n'
+    if rendered.count(delimiter) != 1:
+        raise fail("runtime polyglot delimiter is invalid")
+    payload = rendered.split(delimiter, 1)[1]
+    payload_digest = hashlib.sha256(normalized_runtime(payload)).hexdigest()
+    marker = b"\n# skyvern-pinned-python-payload-v1\n"
+    loader = f"""import sys as s
+if s.flags.isolated != 1 or s.flags.ignore_environment != 1:
+    raise SystemExit("post-checkout: isolated Python restart failed")
+b = s.base_prefix.rstrip("/")
+d = getattr(s, "_stdlib_dir", "")
+r = [b] if b else []
+if d and "/lib/python" in d:
+    c = d.split("/lib/python", 1)[0].rstrip("/")
+    if c and c not in r:
+        r.append(c)
+s.path[:] = [p for p in s.path if p and p.startswith("/") and not any(q in {{".", ".."}} for q in p.split("/")) and any(p == x or p.startswith(x + "/") for x in r)]
+p = s.argv[1]
+a = s.argv[2:]
+import hashlib
+import os
+f = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+try:
+    x = bytearray()
+    while True:
+        q = os.read(f, 65536)
+        if not q:
+            break
+        x.extend(q)
+        if len(x) > 4194304:
+            raise SystemExit("post-checkout: dispatcher is unexpectedly large")
+finally:
+    os.close(f)
+m = {marker!r}
+y = bytes(x)
+if y.count(m) != 1:
+    raise SystemExit("post-checkout: dispatcher payload marker is invalid")
+z = y.split(m, 1)[1]
+o = []
+u = v = 0
+for line in z.splitlines(keepends=True):
+    if line.startswith(b'BUNDLE_PATH_HEX = "'):
+        line = b'BUNDLE_PATH_HEX = "__BUNDLE_PATH_HEX__"\\n'
+        u += 1
+    elif line.startswith(b'BUNDLE_VERSION = "'):
+        line = b'BUNDLE_VERSION = "__BUNDLE_VERSION__"\\n'
+        v += 1
+    o.append(line)
+if u != 1 or v != 1 or hashlib.sha256(b"".join(o)).hexdigest() != {payload_digest!r}:
+    raise SystemExit("post-checkout: dispatcher payload verification failed")
+s.argv = [p, *a]
+g = {{"__name__": "__main__", "__file__": p}}
+exec(compile(z, p, "exec"), g, g)
+""".encode()
+    # Git LFS v3.7.1 lfs/hook.go matchesCurrent reads at most 1024 bytes,
+    # Undents and trims them, then requires exact equality with hookBaseContent.
+    # The first bytes are therefore the real pinned stock hook, not a marker.
+    recognition_limit = 1024
+    if len(lfs_hook) >= recognition_limit:
+        raise fail("stock Git LFS hook exceeds its recognizer read limit")
+    prefix = lfs_hook + b" " * (recognition_limit - len(lfs_hook))
+    command = (
+        b"\nlfs_status=$?\n"
+        b'[ "$lfs_status" -eq 0 ] || exit "$lfs_status"\n'
+        b"exec "
+        + shell_quote(os.fsencode(interpreter.path))
+        + b" -I -E -c "
+        + shell_quote(loader)
+        + b' "$0" "$@"\nexit 1'
+        + marker
+        + payload
+    )
+    return prefix + command
+
+
+def replace_template_line(
+    template: bytes, expected: bytes, replacement: bytes
+) -> bytes:
+    if template.count(expected) != 1:
+        raise fail(f"runtime template placeholder is invalid: {os.fsdecode(expected)}")
+    return template.replace(expected, replacement)
+
+
+def render_runtime_identity(
+    template: bytes, repository: Repository, git_pin: GitPin
+) -> bytes:
+    rendered = replace_template_line(
+        template,
+        TEMPLATE_GIT_PATH_LINE,
+        f'PINNED_GIT_PATH_HEX = "{os.fsencode(git_pin.path).hex()}"'.encode(),
+    )
+    rendered = replace_template_line(
+        rendered,
+        TEMPLATE_GIT_IDENTITY_LINE,
+        f'PINNED_GIT_IDENTITY = "{git_pin.device:x}:{git_pin.inode:x}"'.encode(),
+    )
+    rendered = replace_template_line(
+        rendered,
+        TEMPLATE_COMMON_PATH_LINE,
+        f'COMMON_GIT_PATH_HEX = "{os.fsencode(repository.common.path).hex()}"'.encode(),
+    )
+    rendered = replace_template_line(
+        rendered,
+        TEMPLATE_COMMON_IDENTITY_LINE,
+        (
+            f'COMMON_GIT_IDENTITY = "{repository.common.device:x}:'
+            f'{repository.common.inode:x}"'
+        ).encode(),
+    )
+    return replace_template_line(
+        rendered,
+        TEMPLATE_PRIMARY_IDENTITY_LINE,
+        (
+            f'PRIMARY_ROOT_IDENTITY = "{repository.root.device:x}:'
+            f'{repository.root.inode:x}"'
+        ).encode(),
+    )
+
+
+def render_runtime(template: bytes, bundle_path: str, version_name: str) -> bytes:
+    rendered, path_count = re.subn(
+        rb'^BUNDLE_PATH_HEX = "__BUNDLE_PATH_HEX__"$',
+        f'BUNDLE_PATH_HEX = "{os.fsencode(bundle_path).hex()}"'.encode(),
+        template,
+        flags=re.MULTILINE,
+    )
+    rendered, version_count = re.subn(
+        rb'^BUNDLE_VERSION = "__BUNDLE_VERSION__"$',
+        f'BUNDLE_VERSION = "{version_name}"'.encode(),
+        rendered,
+        flags=re.MULTILINE,
+    )
+    if path_count != 1 or version_count != 1:
+        raise fail("runtime template placeholders are invalid")
+    return rendered
+
+
+def open_regular_at(directory_fd: int, name: str, label: str) -> OpenFile:
+    try:
+        descriptor = os.open(name, REGULAR_FLAGS, dir_fd=directory_fd)
+    except OSError as error:
+        raise fail(f"cannot open {label}: {error}") from error
+    try:
+        return OpenFile(descriptor, read_fd(descriptor, label))
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def validate_installed_version(
+    root: DirectoryPin, version_name: str
+) -> tuple[DirectoryPin, dict[str, OpenFile]]:
+    if VERSION_PATTERN.fullmatch(version_name) is None:
+        raise fail("configured hook version name is invalid")
+    version = pin_child_directory(root, version_name, 0o500, create=False)
+    files: dict[str, OpenFile] = {}
+    try:
+        names = set(os.listdir(version.descriptor))
+        expected = {RUNTIME_NAME, SETUP_NAME, VERSION_NAME}
+        if HELPER_NAME in names:
+            expected.add(HELPER_NAME)
+        if LFS_NAME in names:
+            expected.add(LFS_NAME)
+        if names != expected:
+            raise fail(f"installed hook version is not closed: {version.path}")
+        modes = {
+            RUNTIME_NAME: 0o500,
+            SETUP_NAME: 0o400,
+            VERSION_NAME: 0o400,
+        }
+        if HELPER_NAME in names:
+            modes[HELPER_NAME] = 0o400
+        if LFS_NAME in names:
+            modes[LFS_NAME] = 0o500
+        for name, mode in modes.items():
+            opened = open_regular_at(version.descriptor, name, f"installed {name}")
+            owner_mode(os.fstat(opened.descriptor), mode, f"{version.path}/{name}")
+            files[name] = opened
+        helper = files.get(HELPER_NAME)
+        lfs_hook = files.get(LFS_NAME)
+        computed = content_version(
+            files[RUNTIME_NAME].content,
+            files[SETUP_NAME].content,
+            helper.content if helper is not None else None,
+            lfs_hook.content if lfs_hook is not None else None,
+        )
+        if computed != version_name or files[VERSION_NAME].content != (
+            f"{version_name}\n".encode()
+        ):
+            raise fail(f"installed hook version has invalid content: {version.path}")
+        assert_child_pin(root, version, version_name)
+        return version, files
+    except Exception:
+        for opened in files.values():
+            os.close(opened.descriptor)
+        os.close(version.descriptor)
+        raise
+
+
+def source_attributes(repository: Repository, relative: str) -> tuple[bytes, bytes]:
+    head = source_git(
+        repository,
+        "check-attr",
+        "--source=HEAD",
+        "--all",
+        "--",
+        relative,
+        allowed=(0, 129),
+    )
+    if head.returncode == 0:
+        head_output = head.stdout
+    else:
+        if b"unknown option `source=HEAD'" not in head.stderr:
+            raise fail(os.fsdecode(head.stderr).strip())
+        if (
+            source_git(
+                repository,
+                "diff-index",
+                "--cached",
+                "--quiet",
+                "HEAD",
+                allowed=(0, 1),
+            ).returncode
+            != 0
+        ):
+            raise fail(
+                "Git lacks check-attr --source and the index differs from HEAD; "
+                "cannot verify dispatcher attributes deterministically"
+            )
+        head_output = source_git(
+            repository,
+            "check-attr",
+            "--cached",
+            "--all",
+            "--",
+            relative,
+        ).stdout
+    worktree_output = source_git(
+        repository, "check-attr", "--all", "--", relative
+    ).stdout
+    return head_output, worktree_output
+
+
+def read_runtime_template(repository: Repository, script_directory: str) -> bytes:
+    expected_directory = os.path.join(repository.root.path, "git", "hooks")
+    if os.path.realpath(script_directory) != expected_directory:
+        raise fail("installer must run from the tracked git/hooks source directory")
+    relative = "git/hooks/post-checkout"
+    head_attributes, worktree_attributes = source_attributes(repository, relative)
+    if head_attributes != worktree_attributes:
+        raise fail("dispatcher template attributes differ from HEAD")
+    if any(
+        line.rstrip(b"\r").endswith(b" filter: lfs")
+        for line in head_attributes.splitlines()
+    ):
+        raise fail("dispatcher template must not be Git LFS-filtered")
+    tree = source_git(repository, "ls-tree", "HEAD", "--", relative).stdout
+    if not tree or os.fsdecode(tree).split(maxsplit=1)[0] != "100755":
+        raise fail("dispatcher template must be tracked at mode 0755 in HEAD")
+    hooks_descriptor = os.open(expected_directory, DIRECTORY_FLAGS)
+    descriptor = -1
+    try:
+        status = os.stat(RUNTIME_NAME, dir_fd=hooks_descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(status.st_mode) or stat.S_IMODE(status.st_mode) != 0o755:
+            raise fail("dispatcher template must be a mode-0755 regular file")
+        descriptor = os.open(RUNTIME_NAME, REGULAR_FLAGS, dir_fd=hooks_descriptor)
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (status.st_dev, status.st_ino):
+            raise fail("dispatcher template changed while it was pinned")
+        content = read_fd(descriptor, "dispatcher template")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(hooks_descriptor)
+    head_content = source_git(repository, "cat-file", "blob", f"HEAD:{relative}").stdout
+    if content != head_content:
+        raise fail("dispatcher template differs from its exact HEAD blob")
+    return content
+
+
+def acquire_lock(common: DirectoryPin) -> int:
+    descriptor = -1
+    for _attempt in range(3):
+        try:
+            descriptor = os.open(
+                LOCK_NAME,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=common.descriptor,
+            )
+            break
+        except FileNotFoundError:
+            assert_absolute_pin(common, "common Git directory")
+    if descriptor < 0:
+        raise fail("persistent install lock could not be opened")
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise fail("persistent install lock is not a safe regular file")
+        owner_mode(status, 0o600, "persistent install lock")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def write_all(descriptor: int, content: bytes) -> None:
+    written = 0
+    while written < len(content):
+        count = os.write(descriptor, content[written:])
+        if count <= 0:
+            raise fail("installed artifact write made no progress")
+        written += count
+
+
+def ensure_version_file(
+    version: DirectoryPin,
+    name: str,
+    content: bytes,
+    final_mode: int,
+    *,
+    executable_last: bool = False,
+) -> None:
+    descriptor = -1
+    created = False
+    try:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=version.descriptor,
+            )
+            created = True
+            write_all(descriptor, content)
+            os.fsync(descriptor)
+        except FileExistsError:
+            opened = open_regular_at(version.descriptor, name, f"existing {name}")
+            descriptor = opened.descriptor
+            if opened.content != content:
+                raise fail(
+                    f"existing immutable artifact differs: {version.path}/{name}"
+                )
+            mode = stat.S_IMODE(os.fstat(descriptor).st_mode)
+            allowed_modes = {final_mode}
+            if executable_last:
+                allowed_modes.add(0o600)
+            if mode not in allowed_modes:
+                raise fail(
+                    f"existing immutable artifact has wrong mode: {version.path}/{name}"
+                )
+        except OSError as error:
+            raise fail(
+                f"cannot create immutable artifact {version.path}/{name}: {error}"
+            ) from error
+        if created and not executable_last:
+            os.fchmod(descriptor, final_mode)
+            os.fsync(descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    interrupt = os.environ.get("INSTALL_POST_CHECKOUT_TEST_INTERRUPT_AFTER_ENTRY")
+    if interrupt == name:
+        raise fail(f"test interruption after {name}")
+
+
+def build_or_verify_version(
+    root: DirectoryPin,
+    version_name: str,
+    runtime: bytes,
+    setup: bytes,
+    helper: bytes | None,
+    lfs_hook: bytes | None,
+) -> tuple[DirectoryPin, dict[str, OpenFile]]:
+    try:
+        status = os.stat(version_name, dir_fd=root.descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        status = None
+    if status is not None and not stat.S_ISDIR(status.st_mode):
+        raise fail(
+            f"immutable version path has an unsafe type: {root.path}/{version_name}"
+        )
+    if status is not None and stat.S_IMODE(status.st_mode) == 0o500:
+        return validate_installed_version(root, version_name)
+    version = pin_child_directory(root, version_name, 0o700, create=True)
+    expected = {RUNTIME_NAME, SETUP_NAME, VERSION_NAME}
+    if helper is not None:
+        expected.add(HELPER_NAME)
+    if lfs_hook is not None:
+        expected.add(LFS_NAME)
+    try:
+        if not set(os.listdir(version.descriptor)) <= expected:
+            raise fail(
+                f"immutable version directory has unexpected entries: {version.path}"
+            )
+        ensure_version_file(version, SETUP_NAME, setup, 0o400)
+        if helper is not None:
+            ensure_version_file(version, HELPER_NAME, helper, 0o400)
+        ensure_version_file(version, VERSION_NAME, f"{version_name}\n".encode(), 0o400)
+        if lfs_hook is not None:
+            ensure_version_file(version, LFS_NAME, lfs_hook, 0o500)
+        ensure_version_file(version, RUNTIME_NAME, runtime, 0o500, executable_last=True)
+        if set(os.listdir(version.descriptor)) != expected:
+            raise fail(f"immutable version directory failed closure: {version.path}")
+        runtime_file = open_regular_at(version.descriptor, RUNTIME_NAME, "new runtime")
+        try:
+            if runtime_file.content != runtime:
+                raise fail("new runtime changed before activation")
+            mode = stat.S_IMODE(os.fstat(runtime_file.descriptor).st_mode)
+            if mode == 0o600:
+                os.fchmod(runtime_file.descriptor, 0o500)
+                os.fsync(runtime_file.descriptor)
+            elif mode != 0o500:
+                raise fail("new runtime has an unsafe mode")
+        finally:
+            os.close(runtime_file.descriptor)
+        os.fsync(version.descriptor)
+        os.fchmod(version.descriptor, 0o500)
+        os.fsync(version.descriptor)
+    finally:
+        os.close(version.descriptor)
+    return validate_installed_version(root, version_name)
+
+
+def same_hooks_state(first: HooksState, second: HooksState) -> bool:
+    return first == second
+
+
+def generated_bundle(
+    repository: Repository, content: bytes
+) -> tuple[str, bytes | None]:
+    if not re.search(rb"^DISPATCHER_FORMAT = 1$", content, re.MULTILINE):
+        raise fail("existing non-stock post-checkout hook requires manual review")
+    path_match = RUNTIME_PATH_PATTERN.search(content)
+    version_match = RUNTIME_VERSION_PATTERN.search(content)
+    if path_match is None or version_match is None:
+        raise fail("existing generated post-checkout hook has invalid metadata")
+    path_hex = path_match.group(0).split(b'"', 2)[1]
+    version_name = os.fsdecode(version_match.group(0).split(b'"', 2)[1])
+    try:
+        bundle_path = os.fsdecode(bytes.fromhex(os.fsdecode(path_hex)))
+    except ValueError as error:
+        raise fail(
+            "existing generated post-checkout hook has invalid path metadata"
+        ) from error
+    expected = os.path.join(repository.common.path, ROOT_NAME, version_name)
+    if bundle_path != expected:
+        raise fail(
+            "existing generated post-checkout hook points outside this repository"
+        )
+    root = pin_child_directory(repository.common, ROOT_NAME, 0o700, create=False)
+    version: DirectoryPin | None = None
+    files: dict[str, OpenFile] = {}
+    try:
+        version, files = validate_installed_version(root, version_name)
+        if files[RUNTIME_NAME].content != content:
+            raise fail("existing generated post-checkout hook differs from its bundle")
+        lfs = files.get(LFS_NAME)
+        return version_name, lfs.content if lfs is not None else None
+    finally:
+        for opened in files.values():
+            os.close(opened.descriptor)
+        if version is not None:
+            os.close(version.descriptor)
+        os.close(root.descriptor)
+
+
+def classify_hook(repository: Repository, pin: HookPin) -> tuple[str, bytes | None]:
+    if pin.identity is None:
+        return "absent", None
+    content = pin.identity[3]
+    if content is None or stat.S_IMODE(pin.identity[2]) != 0o755:
+        raise fail("existing post-checkout hook requires manual review")
+    if content == STOCK_LFS_HOOK:
+        return "stock-lfs", content
+    version_name, lfs = generated_bundle(repository, content)
+    return f"generated:{version_name}", lfs
+
+
+def run_test_hook(name: str, *arguments: str) -> None:
+    callback = os.environ.get(name)
+    if callback and subprocess.run([callback, *arguments]).returncode != 0:
+        raise fail(f"test callback {name} failed")
+
+
+def create_prepared_dispatcher(hooks: DirectoryPin, content: bytes) -> tuple[str, int]:
+    descriptor = -1
+    for _attempt in range(32):
+        name = f".post-checkout.skyvern-{os.getpid()}-{secrets.token_hex(8)}"
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=hooks.descriptor,
+            )
+            break
+        except FileExistsError:
+            continue
+    if descriptor < 0:
+        raise fail("cannot reserve a unique prepared dispatcher")
+    try:
+        write_all(descriptor, content)
+        os.fsync(descriptor)
+        os.fchmod(descriptor, 0o755)
+        os.fsync(descriptor)
+        status = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or stat.S_IMODE(status.st_mode) != 0o755
+            or status.st_nlink != 1
+            or read_fd(descriptor, "prepared dispatcher") != content
+        ):
+            raise fail("prepared dispatcher failed verification")
+        os.fsync(hooks.descriptor)
+        return name, descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def atomic_exchange(directory_fd: int, first: str, second: str) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    first_bytes = os.fsencode(first)
+    second_bytes = os.fsencode(second)
+    if sys.platform == "darwin":
+        function = getattr(library, "renameatx_np", None)
+        if function is None:
+            raise fail("atomic hook exchange is unavailable on this macOS system")
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        result = function(directory_fd, first_bytes, directory_fd, second_bytes, 2)
+    elif sys.platform.startswith("linux"):
+        if _process_executable is None:
+            raise fail("Python executable identity is not pinned")
+        result = linux_renameat2(
+            library,
+            directory_fd,
+            first_bytes,
+            directory_fd,
+            second_bytes,
+            2,
+            *_process_executable,
+        )
+    else:
+        raise fail("atomic hook exchange is supported only on macOS and Linux")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise fail(f"atomic hook exchange failed: {os.strerror(error)}")
+
+
+def path_object(directory_fd: int, name: str) -> PathObject:
+    try:
+        status = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as error:
+        raise fail(f"cannot inspect preserved hook object {name}: {error}") from error
+    content = None
+    link_target = None
+    if stat.S_ISREG(status.st_mode):
+        opened = open_regular_at(directory_fd, name, f"hook object {name}")
+        try:
+            opened_status = os.fstat(opened.descriptor)
+            if (opened_status.st_dev, opened_status.st_ino) != (
+                status.st_dev,
+                status.st_ino,
+            ):
+                raise fail(f"hook object changed while opening: {name}")
+            content = opened.content
+        finally:
+            os.close(opened.descriptor)
+    elif stat.S_ISLNK(status.st_mode):
+        link_target = os.readlink(name, dir_fd=directory_fd)
+    return PathObject(
+        status.st_dev, status.st_ino, status.st_mode, content, link_target
+    )
+
+
+def prepared_object(prepared_fd: int, content: bytes) -> PathObject:
+    status = os.fstat(prepared_fd)
+    return PathObject(status.st_dev, status.st_ino, status.st_mode, content, None)
+
+
+def previous_object(previous: HookPin) -> PathObject:
+    if previous.identity is None or previous.identity[3] is None:
+        raise fail("atomic exchange requires a pinned regular previous hook")
+    return PathObject(
+        previous.identity[0],
+        previous.identity[1],
+        previous.identity[2],
+        previous.identity[3],
+        None,
+    )
+
+
+def verify_exchange_or_restore_racer(
+    hooks: DirectoryPin,
+    prepared_name: str,
+    prepared_fd: int,
+    previous: HookPin,
+    content: bytes,
+) -> None:
+    expected_new = prepared_object(prepared_fd, content)
+    expected_old = previous_object(previous)
+    final = path_object(hooks.descriptor, RUNTIME_NAME)
+    backup = path_object(hooks.descriptor, prepared_name)
+    if final == expected_new and backup == expected_old:
+        os.fsync(hooks.descriptor)
+        return
+    if final != expected_new:
+        raise fail(
+            "manual recovery required: post-checkout changed immediately after "
+            "atomic exchange; no further mutation was attempted"
+        )
+
+    unexpected = backup
+    if (
+        path_object(hooks.descriptor, RUNTIME_NAME) != expected_new
+        or path_object(hooks.descriptor, prepared_name) != unexpected
+    ):
+        raise fail(
+            "manual recovery required: exchange rollback preconditions changed; "
+            "no further mutation was attempted"
+        )
+    atomic_exchange(hooks.descriptor, prepared_name, RUNTIME_NAME)
+    os.fsync(hooks.descriptor)
+    restored_final = path_object(hooks.descriptor, RUNTIME_NAME)
+    preserved_dispatcher = path_object(hooks.descriptor, prepared_name)
+    if restored_final != unexpected or preserved_dispatcher != expected_new:
+        raise fail(
+            "manual recovery required: exchange rollback could not be verified; "
+            "inspect both preserved pathnames before another install"
+        )
+    raise fail(
+        "concurrent custom post-checkout hook was restored unchanged after the "
+        "conditional exchange; prepared dispatcher remains preserved"
+    )
+
+
+def verify_published_dispatcher(
+    hooks: DirectoryPin,
+    prepared_name: str,
+    prepared_fd: int,
+    previous: HookPin,
+    content: bytes,
+) -> None:
+    final = open_regular_at(hooks.descriptor, RUNTIME_NAME, "published dispatcher")
+    try:
+        final_status = os.fstat(final.descriptor)
+        prepared_status = os.fstat(prepared_fd)
+        if (
+            (final_status.st_dev, final_status.st_ino)
+            != (prepared_status.st_dev, prepared_status.st_ino)
+            or stat.S_IMODE(final_status.st_mode) != 0o755
+            or final.content != content
+        ):
+            raise fail(
+                "published dispatcher identity is uncertain; inspect hooks manually"
+            )
+    finally:
+        os.close(final.descriptor)
+
+    backup_state: tuple[int, int, int, bytes | None] | None
+    backup_fd = -1
+    try:
+        status = os.stat(prepared_name, dir_fd=hooks.descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(status.st_mode):
+            raise fail(
+                "preserved hook evidence has an unsafe type; inspect hooks manually"
+            )
+        backup_fd = os.open(prepared_name, REGULAR_FLAGS, dir_fd=hooks.descriptor)
+        opened = os.fstat(backup_fd)
+        backup_state = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            read_fd(backup_fd, "preserved hook evidence"),
+        )
+    except OSError as error:
+        raise fail(f"cannot verify preserved hook evidence: {error}") from error
+    finally:
+        if backup_fd >= 0:
+            os.close(backup_fd)
+    expected = previous.identity
+    if expected is None:
+        prepared_status = os.fstat(prepared_fd)
+        expected = (
+            prepared_status.st_dev,
+            prepared_status.st_ino,
+            prepared_status.st_mode,
+            content,
+        )
+    if backup_state != expected:
+        raise fail("concurrent hook replacement was preserved; inspect hooks manually")
+    assert_absolute_pin(hooks, "effective hooks directory")
+
+
+def publish_dispatcher(
+    repository: Repository,
+    hooks_state: HooksState,
+    hook_pin: HookPin,
+    version_name: str,
+    content: bytes,
+) -> bool:
+    if hook_pin.identity is not None and hook_pin.identity[3] == content:
+        assert_hook_pin(hook_pin)
+        return False
+    prepared_name, prepared_fd = create_prepared_dispatcher(hook_pin.directory, content)
+    prepared_path = os.path.join(hook_pin.directory.path, prepared_name)
+    try:
+        run_test_hook(
+            "INSTALL_POST_CHECKOUT_TEST_AFTER_PREPARE",
+            repository.root.path,
+            repository.common.path,
+            version_name,
+            prepared_path,
+        )
+        assert_repository_pins(repository)
+        assert_hook_pin(hook_pin)
+        if not same_hooks_state(hooks_state, inspect_hooks(repository)):
+            raise fail("effective hooks state changed before dispatcher publication")
+        run_test_hook(
+            "INSTALL_POST_CHECKOUT_TEST_BEFORE_PUBLICATION",
+            repository.root.path,
+            repository.common.path,
+            version_name,
+            prepared_path,
+        )
+        if hook_pin.identity is None:
+            try:
+                os.link(
+                    prepared_name,
+                    RUNTIME_NAME,
+                    src_dir_fd=hook_pin.directory.descriptor,
+                    dst_dir_fd=hook_pin.directory.descriptor,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as error:
+                raise fail(
+                    "post-checkout appeared during publication; it was left untouched"
+                ) from error
+        else:
+            atomic_exchange(hook_pin.directory.descriptor, prepared_name, RUNTIME_NAME)
+            verify_exchange_or_restore_racer(
+                hook_pin.directory,
+                prepared_name,
+                prepared_fd,
+                hook_pin,
+                content,
+            )
+        if hook_pin.identity is None:
+            os.fsync(hook_pin.directory.descriptor)
+        run_test_hook(
+            "INSTALL_POST_CHECKOUT_TEST_AFTER_PUBLICATION",
+            repository.root.path,
+            repository.common.path,
+            version_name,
+            prepared_path,
+        )
+        verify_published_dispatcher(
+            hook_pin.directory,
+            prepared_name,
+            prepared_fd,
+            hook_pin,
+            content,
+        )
+        current = inspect_hooks(repository)
+        if (
+            current.configured != hooks_state.configured
+            or current.effective != hooks_state.effective
+            or current.hook is None
+            or current.hook[3] != content
+        ):
+            raise fail("published hooks state is uncertain; inspect hooks manually")
+        return True
+    finally:
+        os.close(prepared_fd)
+
+
+def write_pipe(descriptor: int, content: bytes, errors: list[BaseException]) -> None:
+    try:
+        write_all(descriptor, content)
+    except BaseException as error:
+        errors.append(error)
+    finally:
+        os.close(descriptor)
+
+
+def setup_environment() -> dict[str, str]:
+    home = os.environ.get("HOME", "")
+    if not home or not os.path.isabs(home):
+        raise fail("HOME must be an absolute path for worktree setup")
+    return {
+        "HOME": home,
+        "PATH": SETUP_PATH,
+        "LANG": "C",
+        "LC_ALL": "C",
+        "CI": "1",
+        "NONINTERACTIVE": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "SUPERSET_POST_CHECKOUT": "1",
+        "SUPERSET_NO_AGENTS": "1",
+    }
+
+
+def run_setup_snapshot(
+    setup: bytes,
+    helper: bytes | None,
+    worktree: DirectoryPin,
+    setup_lock_fd: int,
+) -> int:
+    environment = setup_environment()
+    helper_read = -1
+    writer: Optional[threading.Thread] = None
+    errors: list[BaseException] = []
+    passed_fds: list[int] = [worktree.descriptor, setup_lock_fd]
+    environment["SUPERSET_PINNED_WORKTREE_FD"] = str(worktree.descriptor)
+    if helper is not None:
+        helper_read, helper_write = os.pipe()
+        environment["SUPERSET_PINNED_STORAGE_FD"] = str(helper_read)
+        passed_fds.append(helper_read)
+        writer = threading.Thread(
+            target=write_pipe, args=(helper_write, helper, errors)
+        )
+        writer.start()
+    else:
+        environment.pop("SUPERSET_PINNED_STORAGE_FD", None)
+    previous = os.open(".", DIRECTORY_FLAGS)
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        os.fchdir(worktree.descriptor)
+        process = subprocess.Popen(
+            ["/bin/bash", "--noprofile", "--norc", "-s", "--"],
+            stdin=subprocess.PIPE,
+            env=environment,
+            pass_fds=tuple(passed_fds),
+        )
+        if helper_read >= 0:
+            os.close(helper_read)
+            helper_read = -1
+        process.communicate(input=setup)
+    finally:
+        os.fchdir(previous)
+        os.close(previous)
+        if helper_read >= 0:
+            os.close(helper_read)
+        if writer is not None:
+            writer.join()
+    if errors:
+        raise fail(f"pinned helper pipe failed: {errors[0]}")
+    if process is None:
+        raise fail("setup process could not be created")
+    return process.returncode
+
+
+def open_setup_lock(git_dir: DirectoryPin) -> int:
+    identity = os.fstat(git_dir.descriptor)
+    descriptor = os.open(
+        f"{SETUP_LOCK_PREFIX}{identity.st_dev:x}.{identity.st_ino:x}",
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=git_dir.descriptor,
+    )
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise fail("worktree setup lock is unsafe")
+        owner_mode(status, 0o600, "worktree setup lock")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def unique_stamp_name(prefix: str, version_name: str) -> str:
+    return f"{prefix}{version_name}.{os.getpid()}.{secrets.token_hex(8)}"
+
+
+def atomic_no_replace(directory_fd: int, source: str, destination: str) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if sys.platform == "darwin":
+        function = getattr(library, "renameatx_np", None)
+        if function is None:
+            raise fail("atomic stamp recovery is unavailable on macOS")
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        result = function(
+            directory_fd, source_bytes, directory_fd, destination_bytes, 4
+        )
+    elif sys.platform.startswith("linux"):
+        if _process_executable is None:
+            raise fail("Python executable identity is not pinned")
+        result = linux_renameat2(
+            library,
+            directory_fd,
+            source_bytes,
+            directory_fd,
+            destination_bytes,
+            1,
+            *_process_executable,
+        )
+    else:
+        raise fail("atomic stamp recovery is supported only on macOS and Linux")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise fail(f"atomic stamp recovery failed: {os.strerror(error)}")
+
+
+def stamp_test_hook(stage: str, git_dir: DirectoryPin, temporary_name: str) -> None:
+    callback = os.environ.get(f"INSTALL_POST_CHECKOUT_TEST_STAMP_{stage.upper()}")
+    if callback:
+        environment = os.environ.copy()
+        environment["INSTALL_POST_CHECKOUT_TEST_PINNED_GIT_FD"] = str(
+            git_dir.descriptor
+        )
+        result = subprocess.run(
+            [callback, stage, temporary_name],
+            env=environment,
+            pass_fds=(git_dir.descriptor,),
+        )
+        if result.returncode != 0:
+            raise fail(f"stamp test callback failed after {stage}")
+
+
+def remove_published_temp_link(
+    git_dir: DirectoryPin, final_status: os.stat_result, version_name: str
+) -> bool:
+    matching: list[tuple[str, os.stat_result]] = []
+    for candidate in os.listdir(git_dir.descriptor):
+        if not candidate.startswith(f"{STAMP_TEMP_PREFIX}{version_name}."):
+            continue
+        try:
+            status = os.stat(
+                candidate, dir_fd=git_dir.descriptor, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            continue
+        if (status.st_dev, status.st_ino) == (
+            final_status.st_dev,
+            final_status.st_ino,
+        ):
+            matching.append((candidate, status))
+    if len(matching) != 1:
+        return False
+    if not unlink_exact_stamp_temp(git_dir, *matching[0]):
+        return False
+    os.fsync(git_dir.descriptor)
+    return True
+
+
+def unlink_exact_stamp_temp(
+    git_dir: DirectoryPin, name: str, expected: os.stat_result
+) -> bool:
+    try:
+        current = os.stat(name, dir_fd=git_dir.descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or current.st_uid != os.geteuid()
+        or stat.S_IMODE(current.st_mode) != 0o600
+        or (
+            current.st_dev,
+            current.st_ino,
+            current.st_mode,
+            current.st_uid,
+            current.st_nlink,
+        )
+        != (
+            expected.st_dev,
+            expected.st_ino,
+            expected.st_mode,
+            expected.st_uid,
+            expected.st_nlink,
+        )
+    ):
+        return False
+    os.unlink(name, dir_fd=git_dir.descriptor)
+    return True
+
+
+def existing_stamp(git_dir: DirectoryPin, version_name: str) -> bool:
+    name = f"{STAMP_PREFIX}{version_name}"
+    try:
+        opened = open_regular_at(git_dir.descriptor, name, "worktree success stamp")
+    except InstallError as error:
+        if isinstance(error.__cause__, FileNotFoundError):
+            return False
+        raise
+    try:
+        status = os.fstat(opened.descriptor)
+        owner_mode(status, 0o600, "worktree success stamp")
+        expected = f"{version_name}\n".encode()
+        if opened.content == expected:
+            if status.st_nlink == 1:
+                return True
+            if status.st_nlink == 2 and remove_published_temp_link(
+                git_dir, status, version_name
+            ):
+                return os.fstat(opened.descriptor).st_nlink == 1
+            raise fail("worktree success stamp has an unexpected hard-link count")
+        if status.st_nlink != 1:
+            raise fail("foreign worktree success stamp blocks setup")
+        recovery = unique_stamp_name(STAMP_RECOVERY_PREFIX, version_name)
+        atomic_no_replace(git_dir.descriptor, name, recovery)
+        os.fsync(git_dir.descriptor)
+        recovered = open_regular_at(
+            git_dir.descriptor, recovery, "recovered worktree success stamp"
+        )
+        try:
+            recovered_status = os.fstat(recovered.descriptor)
+            if (
+                (recovered_status.st_dev, recovered_status.st_ino)
+                != (status.st_dev, status.st_ino)
+                or recovered.content != opened.content
+                or recovered_status.st_nlink != 1
+            ):
+                raise fail("recovered worktree success stamp identity is uncertain")
+        finally:
+            os.close(recovered.descriptor)
+        return False
+    finally:
+        os.close(opened.descriptor)
+
+
+def save_stamp(git_dir: DirectoryPin, version_name: str) -> None:
+    name = f"{STAMP_PREFIX}{version_name}"
+    if existing_stamp(git_dir, version_name):
+        return
+    temporary_name = unique_stamp_name(STAMP_TEMP_PREFIX, version_name)
+    descriptor = os.open(
+        temporary_name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=git_dir.descriptor,
+    )
+    try:
+        stamp_test_hook("create", git_dir, temporary_name)
+        write_all(descriptor, f"{version_name}\n".encode())
+        stamp_test_hook("write", git_dir, temporary_name)
+        os.fsync(descriptor)
+        stamp_test_hook("fsync", git_dir, temporary_name)
+    finally:
+        os.close(descriptor)
+    for _attempt in range(2):
+        try:
+            os.link(
+                temporary_name,
+                name,
+                src_dir_fd=git_dir.descriptor,
+                dst_dir_fd=git_dir.descriptor,
+                follow_symlinks=False,
+            )
+            break
+        except FileExistsError:
+            if existing_stamp(git_dir, version_name):
+                return
+    else:
+        raise fail("worktree success stamp could not be published without clobbering")
+    os.fsync(git_dir.descriptor)
+    stamp_test_hook("publish", git_dir, temporary_name)
+    temporary_status = os.stat(
+        temporary_name, dir_fd=git_dir.descriptor, follow_symlinks=False
+    )
+    final_status = os.stat(name, dir_fd=git_dir.descriptor, follow_symlinks=False)
+    if (temporary_status.st_dev, temporary_status.st_ino) != (
+        final_status.st_dev,
+        final_status.st_ino,
+    ):
+        raise fail("published worktree success stamp identity is uncertain")
+    stamp_test_hook("cleanup", git_dir, temporary_name)
+    if not unlink_exact_stamp_temp(git_dir, temporary_name, temporary_status):
+        raise fail(
+            "worktree success stamp temporary identity changed; recovery evidence "
+            "was left"
+        )
+    os.fsync(git_dir.descriptor)
+    if not existing_stamp(git_dir, version_name):
+        raise fail("published worktree success stamp failed verification")
+
+
+def pinned_worktree_git_records(worktree: DirectoryPin) -> tuple[bytes, bytes, bytes]:
+    previous = os.open(".", DIRECTORY_FLAGS)
+    try:
+        os.fchdir(worktree.descriptor)
+        base = os.getcwdb()
+        git_dir = exact_file_record(
+            run_git(["-C", ".", "rev-parse", "--git-dir"]).stdout,
+            "reported worktree Git directory",
+        )
+        common = exact_file_record(
+            run_git(["-C", ".", "rev-parse", "--git-common-dir"]).stdout,
+            "reported worktree common Git directory",
+        )
+        return base, git_dir, common
+    finally:
+        os.fchdir(previous)
+        os.close(previous)
+
+
+def exact_file_record(content: bytes, label: str) -> bytes:
+    if not content.endswith(b"\n"):
+        raise fail(f"{label} lacks its final line-feed terminator")
+    return content[:-1]
+
+
+def record_path(content: bytes, prefix: bytes, label: str) -> bytes:
+    record = exact_file_record(content, label)
+    if not record.startswith(prefix):
+        raise fail(f"{label} is malformed")
+    path = record[len(prefix) :]
+    if (
+        not path
+        or b"\0" in path
+        or any(byte < 32 and byte not in {10, 13} or byte == 127 for byte in path)
+    ):
+        raise fail(f"{label} contains invalid control bytes")
+    return path
+
+
+def path_components(path: bytes, label: str) -> list[bytes]:
+    if not path.startswith(b"/"):
+        raise fail(f"{label} base is not absolute")
+    components = path.split(b"/")[1:]
+    if any(component in {b"", b".", b".."} for component in components):
+        raise fail(f"{label} base is not canonical")
+    return components
+
+
+def resolve_record_path(
+    base: bytes, path: bytes, label: str
+) -> tuple[bytes, list[bytes], bool]:
+    base_components = path_components(base, label)
+    absolute = path.startswith(b"/")
+    components = path.split(b"/")[1:] if absolute else path.split(b"/")
+    if (
+        not components
+        or components[-1] in {b"", b".", b".."}
+        or any(component == b"" for component in components)
+    ):
+        raise fail(f"{label} path has malformed components")
+    if any(component == b"." for component in components):
+        raise fail(f"{label} path is not canonical")
+    stack: list[bytes] = [] if absolute else list(base_components)
+    minimum_depth = len(stack)
+    saw_named_component = False
+    for component in components:
+        if component == b"..":
+            if absolute or saw_named_component:
+                raise fail(f"{label} path is not canonical")
+            if not stack:
+                raise fail(f"{label} path escapes its expected domain")
+            stack.pop()
+            minimum_depth = min(minimum_depth, len(stack))
+            continue
+        saw_named_component = True
+        stack.append(component)
+    target = b"/" + b"/".join(stack)
+    common_depth = 0
+    for base_component, target_component in zip(base_components, stack):
+        if base_component != target_component:
+            break
+        common_depth += 1
+    if not absolute and minimum_depth < common_depth:
+        raise fail(f"{label} path escapes its expected domain")
+    return target, components, absolute
+
+
+def open_record_target(
+    base_fd: int,
+    components: list[bytes],
+    absolute: bool,
+    expected: tuple[int, int],
+    regular: bool,
+    label: str,
+) -> int:
+    descriptor = os.open(b"/", DIRECTORY_FLAGS) if absolute else os.dup(base_fd)
+    try:
+        for index, component in enumerate(components):
+            if component == b".":
+                continue
+            final = index == len(components) - 1
+            flags = REGULAR_FLAGS if final and regular else DIRECTORY_FLAGS
+            before = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            if final:
+                expected_type = stat.S_ISREG if regular else stat.S_ISDIR
+                if not expected_type(before.st_mode):
+                    raise fail(f"{label} has an unsafe final type")
+            elif not stat.S_ISDIR(before.st_mode):
+                raise fail(f"{label} contains a symlink or non-directory")
+            opened_fd = os.open(component, flags, dir_fd=descriptor)
+            opened = os.fstat(opened_fd)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                os.close(opened_fd)
+                raise fail(f"{label} changed while it was traversed")
+            os.close(descriptor)
+            descriptor = opened_fd
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != expected:
+            raise fail(f"{label} resolved to the wrong inode")
+        result = descriptor
+        descriptor = -1
+        return result
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def verify_linked_admin_association(
+    repository: Repository,
+    worktree: DirectoryPin,
+    git_entry: GitEntryPin,
+    current_path: bytes,
+) -> DirectoryPin:
+    if git_entry.content is None:
+        raise fail("registered linked worktree .git entry is not a regular file")
+    root_record = record_path(
+        git_entry.content, b"gitdir: ", "registered linked worktree .git file"
+    )
+    root_target, root_components, root_absolute = resolve_record_path(
+        current_path, root_record, "registered linked worktree .git file"
+    )
+    worktrees_fd = -1
+    matches = 0
+    selected: DirectoryPin | None = None
+    common_path = os.fsencode(repository.common.path).rstrip(b"/")
+    expected_git_entry = current_path.rstrip(b"/") + b"/.git"
+    try:
+        worktrees_fd = os.open(
+            "worktrees", DIRECTORY_FLAGS, dir_fd=repository.common.descriptor
+        )
+        for name in sorted(os.listdir(worktrees_fd)):
+            admin_fd = -1
+            record: OpenFile | None = None
+            backlink_fd = -1
+            target_admin_fd = -1
+            try:
+                before = os.stat(name, dir_fd=worktrees_fd, follow_symlinks=False)
+                if not stat.S_ISDIR(before.st_mode):
+                    raise fail("common worktrees entry is not a real directory")
+                admin_fd = os.open(name, DIRECTORY_FLAGS, dir_fd=worktrees_fd)
+                opened = os.fstat(admin_fd)
+                admin_identity = (opened.st_dev, opened.st_ino)
+                if admin_identity != (before.st_dev, before.st_ino):
+                    raise fail("linked admin directory changed while opening")
+                admin_path = common_path + b"/worktrees/" + os.fsencode(name)
+                record = open_regular_at(
+                    admin_fd, "gitdir", "linked admin gitdir record"
+                )
+                backlink_record = record_path(
+                    record.content, b"", "linked admin gitdir record"
+                )
+                (
+                    backlink_target,
+                    backlink_components,
+                    backlink_absolute,
+                ) = resolve_record_path(
+                    admin_path,
+                    backlink_record,
+                    "linked admin gitdir record",
+                )
+                if backlink_target != expected_git_entry:
+                    continue
+                if root_target != admin_path:
+                    raise fail(
+                        "registered linked worktree has ambiguous admin metadata"
+                    )
+                backlink_fd = open_record_target(
+                    admin_fd,
+                    backlink_components,
+                    backlink_absolute,
+                    (git_entry.device, git_entry.inode),
+                    True,
+                    "linked admin gitdir record",
+                )
+                target_admin_fd = open_record_target(
+                    worktree.descriptor,
+                    root_components,
+                    root_absolute,
+                    admin_identity,
+                    False,
+                    "registered linked worktree .git target",
+                )
+                matches += 1
+                opened_admin = os.fstat(admin_fd)
+                selected = DirectoryPin(
+                    os.fsdecode(admin_path),
+                    os.dup(admin_fd),
+                    opened_admin.st_dev,
+                    opened_admin.st_ino,
+                )
+            finally:
+                if target_admin_fd >= 0:
+                    os.close(target_admin_fd)
+                if backlink_fd >= 0:
+                    os.close(backlink_fd)
+                if record is not None:
+                    os.close(record.descriptor)
+                if admin_fd >= 0:
+                    os.close(admin_fd)
+        if matches != 1 or selected is None:
+            raise fail("pinned root does not match exactly one registered linked admin")
+        no_shared_write(
+            os.fstat(selected.descriptor),
+            "selected linked worktree admin directory",
+        )
+        result = selected
+        selected = None
+        return result
+    except FileNotFoundError as error:
+        raise fail("common Git directory has no linked-worktree metadata") from error
+    finally:
+        if selected is not None:
+            os.close(selected.descriptor)
+        if worktrees_fd >= 0:
+            os.close(worktrees_fd)
+
+
+def corroborate_worktree_git_paths(
+    repository: Repository,
+    worktree: DirectoryPin,
+    expected_git_path: bytes,
+    expected_git_identity: tuple[int, int],
+) -> None:
+    base, git_record, common_record = pinned_worktree_git_records(worktree)
+    git_path = record_path(git_record + b"\n", b"", "reported worktree Git directory")
+    common_path = record_path(
+        common_record + b"\n", b"", "reported worktree common Git directory"
+    )
+    resolved_git, git_components, git_absolute = resolve_record_path(
+        base, git_path, "reported worktree Git directory"
+    )
+    resolved_common, common_components, common_absolute = resolve_record_path(
+        base, common_path, "reported worktree common Git directory"
+    )
+    expected_common_path = os.fsencode(repository.common.path)
+    if resolved_git != expected_git_path:
+        raise fail("reported worktree Git directory does not match its .git entry")
+    if resolved_common != expected_common_path:
+        raise fail("reported worktree common Git directory changed")
+    reported_git = -1
+    reported_common = -1
+    try:
+        reported_git = open_record_target(
+            worktree.descriptor,
+            git_components,
+            git_absolute,
+            expected_git_identity,
+            False,
+            "reported worktree Git directory",
+        )
+        reported_common = open_record_target(
+            worktree.descriptor,
+            common_components,
+            common_absolute,
+            (repository.common.device, repository.common.inode),
+            False,
+            "reported worktree common Git directory",
+        )
+    finally:
+        if reported_common >= 0:
+            os.close(reported_common)
+        if reported_git >= 0:
+            os.close(reported_git)
+
+
+def associated_worktree_git_dir(
+    repository: Repository, worktree: DirectoryPin
+) -> DirectoryPin | None:
+    git_entry = pin_git_entry(worktree, "registered worktree")
+    selected_admin: DirectoryPin | None = None
+    try:
+        previous = os.open(".", DIRECTORY_FLAGS)
+        try:
+            os.fchdir(worktree.descriptor)
+            current_path = os.getcwdb()
+        finally:
+            os.fchdir(previous)
+            os.close(previous)
+        is_primary = (worktree.device, worktree.inode) == (
+            repository.root.device,
+            repository.root.inode,
+        )
+        if is_primary:
+            if git_entry.content is None:
+                if (git_entry.device, git_entry.inode) != (
+                    repository.common.device,
+                    repository.common.inode,
+                ):
+                    raise fail("registered primary worktree .git identity is invalid")
+            else:
+                primary_record = record_path(
+                    git_entry.content,
+                    b"gitdir: ",
+                    "registered primary worktree .git file",
+                )
+                (
+                    primary_path,
+                    primary_components,
+                    primary_absolute,
+                ) = resolve_record_path(
+                    current_path,
+                    primary_record,
+                    "registered primary worktree .git file",
+                )
+                if primary_path != os.fsencode(repository.common.path):
+                    raise fail("registered primary worktree .git target is invalid")
+                primary_target = open_record_target(
+                    worktree.descriptor,
+                    primary_components,
+                    primary_absolute,
+                    (repository.common.device, repository.common.inode),
+                    False,
+                    "registered primary worktree .git target",
+                )
+                try:
+                    pass
+                finally:
+                    os.close(primary_target)
+            corroborate_worktree_git_paths(
+                repository,
+                worktree,
+                os.fsencode(repository.common.path),
+                (repository.common.device, repository.common.inode),
+            )
+            return None
+        selected_admin = verify_linked_admin_association(
+            repository, worktree, git_entry, current_path
+        )
+        corroborate_worktree_git_paths(
+            repository,
+            worktree,
+            os.fsencode(selected_admin.path),
+            (selected_admin.device, selected_admin.inode),
+        )
+        result = selected_admin
+        selected_admin = None
+        return result
+    finally:
+        if selected_admin is not None:
+            os.close(selected_admin.descriptor)
+        os.close(git_entry.descriptor)
+
+
+def backfill_one(
+    repository: Repository,
+    path: str,
+    version_name: str,
+    setup: bytes,
+    helper: bytes | None,
+) -> None:
+    worktree = pin_directory(path, "registered worktree")
+    git_dir: DirectoryPin | None = None
+    lock_fd = -1
+    try:
+        if not os.path.isdir(f"/dev/fd/{worktree.descriptor}"):
+            raise fail("/dev/fd is required for pinned setup execution")
+        callback = os.environ.get("INSTALL_POST_CHECKOUT_TEST_AFTER_WORKTREE_PIN")
+        if callback:
+            environment = os.environ.copy()
+            environment["INSTALL_POST_CHECKOUT_TEST_PINNED_WORKTREE_FD"] = str(
+                worktree.descriptor
+            )
+            if (
+                subprocess.run(
+                    [callback],
+                    env=environment,
+                    pass_fds=(worktree.descriptor,),
+                ).returncode
+                != 0
+            ):
+                raise fail("worktree-pin test callback failed")
+        git_dir = associated_worktree_git_dir(repository, worktree)
+        if git_dir is None:
+            return
+        lock_fd = open_setup_lock(git_dir)
+        if existing_stamp(git_dir, version_name):
+            return
+        if run_setup_snapshot(setup, helper, worktree, lock_fd) != 0:
+            raise fail(f"setup failed while backfilling linked worktree: {path}")
+        save_stamp(git_dir, version_name)
+        if (
+            os.fstat(worktree.descriptor).st_dev,
+            os.fstat(worktree.descriptor).st_ino,
+        ) != (
+            worktree.device,
+            worktree.inode,
+        ):
+            raise fail("pinned registered worktree descriptor changed identity")
+        assert_absolute_pin(git_dir, "linked worktree Git directory")
+    finally:
+        if lock_fd >= 0:
+            os.close(lock_fd)
+        if git_dir is not None:
+            os.close(git_dir.descriptor)
+        os.close(worktree.descriptor)
+
+
+def backfill_worktrees(
+    repository: Repository,
+    version_name: str,
+    setup: bytes,
+    helper: bytes | None,
+) -> tuple[str, ...]:
+    previous: tuple[str, ...] | None = None
+    for _attempt in range(16):
+        current = registered_worktrees(repository)
+        for path in current:
+            backfill_one(repository, path, version_name, setup, helper)
+        after = registered_worktrees(repository)
+        if after == current and current == previous:
+            return after
+        previous = current
+    raise fail("registered worktree set did not stabilize during backfill")
+
+
+def install_repository(
+    requested: str,
+    runtime_template: bytes,
+    interpreter: InterpreterPin,
+    git_pin: GitPin,
+) -> None:
+    repository = resolve_repository(requested)
+    lock_fd = -1
+    root: DirectoryPin | None = None
+    version: DirectoryPin | None = None
+    version_files: dict[str, OpenFile] = {}
+    hook_pin: HookPin | None = None
+    try:
+        lock_fd = acquire_lock(repository.common)
+        run_test_hook(
+            "INSTALL_POST_CHECKOUT_TEST_AFTER_LOCK",
+            repository.root.path,
+            repository.common.path,
+        )
+        assert_interpreter_pin(interpreter)
+        assert_git_pin(git_pin)
+        assert_repository_pins(repository)
+        initial_hooks = inspect_hooks(repository)
+        hooks = pin_hooks_directory(repository, initial_hooks.effective)
+        hook_pin = pin_hook(initial_hooks, hooks)
+        _classification, lfs_hook = classify_hook(repository, hook_pin)
+        sources = load_sources(repository)
+        repository_runtime = render_runtime_identity(
+            runtime_template, repository, git_pin
+        )
+        repository_runtime = render_lfs_runtime(
+            repository_runtime, interpreter, lfs_hook
+        )
+        version_name = content_version(
+            repository_runtime, sources.setup, sources.helper, lfs_hook
+        )
+
+        try:
+            root = pin_child_directory(
+                repository.common, ROOT_NAME, 0o700, create=False
+            )
+        except FileNotFoundError:
+            root = pin_child_directory(repository.common, ROOT_NAME, 0o700, create=True)
+            os.fsync(repository.common.descriptor)
+        version_path = os.path.join(root.path, version_name)
+        runtime = render_runtime(repository_runtime, version_path, version_name)
+        version, version_files = build_or_verify_version(
+            root, version_name, runtime, sources.setup, sources.helper, lfs_hook
+        )
+        os.fsync(root.descriptor)
+        run_test_hook(
+            "INSTALL_POST_CHECKOUT_TEST_BEFORE_PUBLICATION_CHECKS",
+            repository.root.path,
+            repository.common.path,
+            version_path,
+        )
+
+        assert_repository_pins(repository)
+        assert_interpreter_pin(interpreter)
+        assert_git_pin(git_pin)
+        assert_child_pin(repository.common, root, ROOT_NAME)
+        assert_child_pin(root, version, version_name)
+        assert_hook_pin(hook_pin)
+        no_shared_write(os.fstat(repository.common.descriptor), "common Git directory")
+        owner_mode(os.fstat(root.descriptor), 0o700, root.path)
+        owner_mode(os.fstat(version.descriptor), 0o500, version.path)
+        if load_sources(repository) != sources:
+            raise fail("reviewed source changed before hook activation")
+        if not same_hooks_state(initial_hooks, inspect_hooks(repository)):
+            raise fail("effective hooks state changed during installation")
+        checked, checked_files = validate_installed_version(root, version_name)
+        os.close(checked.descriptor)
+        for opened in checked_files.values():
+            os.close(opened.descriptor)
+        expected_files = {
+            RUNTIME_NAME: runtime,
+            SETUP_NAME: sources.setup,
+            VERSION_NAME: f"{version_name}\n".encode(),
+        }
+        if sources.helper is not None:
+            expected_files[HELPER_NAME] = sources.helper
+        if lfs_hook is not None:
+            expected_files[LFS_NAME] = lfs_hook
+        if {
+            name: opened.content for name, opened in version_files.items()
+        } != expected_files:
+            raise fail("immutable bundle does not match the reviewed install inputs")
+
+        published = publish_dispatcher(
+            repository, initial_hooks, hook_pin, version_name, runtime
+        )
+
+        setup = version_files[SETUP_NAME].content
+        helper_file = version_files.get(HELPER_NAME)
+        final_worktrees = backfill_worktrees(
+            repository,
+            version_name,
+            setup,
+            helper_file.content if helper_file is not None else None,
+        )
+        assert_repository_pins(repository)
+        assert_absolute_pin(hook_pin.directory, "effective hooks directory")
+        assert_child_pin(repository.common, root, ROOT_NAME)
+        assert_child_pin(root, version, version_name)
+        if load_sources(repository) != sources:
+            raise fail("reviewed source changed during hook activation")
+        final_hooks = inspect_hooks(repository)
+        if (
+            final_hooks.configured != initial_hooks.configured
+            or final_hooks.effective != initial_hooks.effective
+            or final_hooks.worktrees != final_worktrees
+            or final_hooks.hook is None
+            or final_hooks.hook[3] != runtime
+        ):
+            raise fail("published hooks state changed before installation completed")
+        checked, checked_files = validate_installed_version(root, version_name)
+        os.close(checked.descriptor)
+        for opened in checked_files.values():
+            os.close(opened.descriptor)
+        assert_interpreter_pin(interpreter)
+        assert_git_pin(git_pin)
+        action = "installed" if published else "already current"
+        print(f"install-post-checkout: {action} {version_name}: {repository.root.path}")
+    finally:
+        for opened in version_files.values():
+            os.close(opened.descriptor)
+        if version is not None:
+            os.close(version.descriptor)
+        if root is not None:
+            os.close(root.descriptor)
+        if hook_pin is not None:
+            if hook_pin.descriptor >= 0:
+                os.close(hook_pin.descriptor)
+            os.close(hook_pin.directory.descriptor)
+        if lock_fd >= 0:
+            os.close(lock_fd)
+        os.close(repository.common.descriptor)
+        os.close(repository.git_dir.descriptor)
+        os.close(repository.git_entry.descriptor)
+        os.close(repository.root.descriptor)
+
+
+def usage() -> None:
+    print(
+        "Usage: install-post-checkout [REPOSITORY ...]\n\n"
+        "With no arguments, installs into:\n"
+        "  $HOME/Development/rustwright\n"
+        "  $HOME/Development/Skyvern-cloud"
+    )
+
+
+def main(arguments: list[str]) -> int:
+    global _git_executable, _process_executable
+    os.umask(0o077)
+    if arguments and arguments[0] in {"-h", "--help"}:
+        usage()
+        return 0
+    source: Repository | None = None
+    interpreter: InterpreterPin | None = None
+    git_pin: GitPin | None = None
+    try:
+        git_pin = pin_git_executable()
+        _git_executable = git_pin.path
+        require_supported_git()
+        script_directory = os.path.dirname(os.path.realpath(__file__))
+        source = resolve_source_repository(script_directory)
+        runtime_template = read_runtime_template(source, script_directory)
+        interpreter = pin_interpreter()
+        _process_executable = (
+            os.fsencode(interpreter.path),
+            (interpreter.device, interpreter.inode),
+        )
+        runtime = render_interpreter(runtime_template, interpreter)
+    except (InstallError, OSError, subprocess.SubprocessError) as error:
+        print(f"install-post-checkout: {error}", file=sys.stderr)
+        return 1
+    repositories = arguments or [
+        str(Path.home() / "Development" / "rustwright"),
+        str(Path.home() / "Development" / "Skyvern-cloud"),
+    ]
+    try:
+        status = 0
+        for repository in repositories:
+            try:
+                assert_interpreter_pin(interpreter)
+                assert_git_pin(git_pin)
+                if read_runtime_template(source, script_directory) != runtime_template:
+                    raise fail("dispatcher template changed during installation")
+                install_repository(repository, runtime, interpreter, git_pin)
+                if read_runtime_template(source, script_directory) != runtime_template:
+                    raise fail("dispatcher template changed during installation")
+            except (InstallError, OSError, subprocess.SubprocessError) as error:
+                print(f"install-post-checkout: {error}", file=sys.stderr)
+                status = 1
+        return status
+    finally:
+        os.close(interpreter.descriptor)
+        os.close(git_pin.descriptor)
+        os.close(source.common.descriptor)
+        os.close(source.git_dir.descriptor)
+        os.close(source.git_entry.descriptor)
+        os.close(source.root.descriptor)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
