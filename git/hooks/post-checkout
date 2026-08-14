@@ -1,33 +1,1148 @@
 #!/bin/sh
-# post-checkout: git-lfs passthrough + superset-parity worktree setup.
-# Canonical copy: ~/Development/dotfiles/git/hooks/post-checkout
-# Install: cp into <repo>/.git/hooks/post-checkout && chmod +x
-#
-# Args: $1 = previous HEAD, $2 = new HEAD, $3 = 1 for branch checkout.
+""":"
+for python in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [ -x "$python" ] && "$python" -I -E -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+        exec "$python" -I -E "$0" "$@"
+    fi
+done
+printf '%s\n' 'post-checkout: Python 3.10+ is required at a trusted system path' >&2
+exit 1
+# Python parses this closing polyglot delimiter.
+# shellcheck disable=SC2317
+":"""
+import sys as _bootstrap_sys
 
-# --- git-lfs (verbatim from the hook git-lfs installs; keep the invocation
-# --- line so `git lfs install` recognizes and does not rewrite this file) ---
-command -v git-lfs >/dev/null 2>&1 || { printf >&2 "\n%s\n\n" "This repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'post-checkout' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks')."; exit 2; }
-git lfs post-checkout "$@"
-lfs_rc=$?
+if _bootstrap_sys.flags.isolated != 1 or _bootstrap_sys.flags.ignore_environment != 1:
+    raise SystemExit("post-checkout: isolated Python restart failed")
 
-# --- superset-parity worktree setup ---
-# When a NEW linked worktree is created (git worktree add — via herdr, the
-# CLI, or any tool), run the repo's .superset/config.json "setup" commands
-# in the worktree, with SUPERSET_ROOT_PATH pointing at the main checkout.
-prev="${1:-}"; flag="${3:-}"
-[ "$flag" = "1" ] || exit "$lfs_rc"
-[ "$prev" = "0000000000000000000000000000000000000000" ] || exit "$lfs_rc"
-gitdir="$(git rev-parse --git-dir 2>/dev/null)" || exit "$lfs_rc"
-common="$(git rev-parse --git-common-dir 2>/dev/null)" || exit "$lfs_rc"
-[ "$gitdir" != "$common" ] || exit "$lfs_rc"   # linked worktrees only, not clones
+# Isolated mode removes PYTHONPATH and user site configuration before this file
+# starts. Keep only interpreter-owned roots before any remaining import.
+_base_roots = [_base for _base in [_bootstrap_sys.base_prefix.rstrip("/")] if _base]
+_stdlib_dir = getattr(_bootstrap_sys, "_stdlib_dir", "")
+_stdlib_marker = "/lib/python"
+_canonical_base = ""
+if _stdlib_dir and _stdlib_marker in _stdlib_dir:
+    _canonical_base = _stdlib_dir.split(_stdlib_marker, 1)[0].rstrip("/")
+    if _canonical_base and _canonical_base not in _base_roots:
+        _base_roots.append(_canonical_base)
+_trusted_path = []
+_entry = ""
+for _entry in _bootstrap_sys.path:
+    if not _entry or not _entry.startswith("/"):
+        continue
+    if any(_part in {".", ".."} for _part in _entry.split("/")):
+        continue
+    if any(_entry == _base or _entry.startswith(_base + "/") for _base in _base_roots):
+        _trusted_path.append(_entry)
+_bootstrap_sys.path[:] = _trusted_path
+sys = _bootstrap_sys
+del _base_roots, _bootstrap_sys, _canonical_base, _entry
+del _stdlib_dir, _stdlib_marker, _trusted_path
 
-SUPERSET_ROOT_PATH="$(cd "$(dirname "$common")" && pwd)"
-export SUPERSET_ROOT_PATH
-cfg="$SUPERSET_ROOT_PATH/.superset/config.json"
-[ -f "$cfg" ] || exit "$lfs_rc"
-command -v jq >/dev/null 2>&1 || { echo "post-checkout: jq not found; skipped worktree setup" >&2; exit "$lfs_rc"; }
+import hashlib
+import ctypes
+import errno
+import fcntl
+import os
+import re
+import stat
+import subprocess
+import threading
+from dataclasses import dataclass
+from typing import Literal, Optional, Protocol, Union
 
-echo "post-checkout: running .superset/config.json setup for new worktree" >&2
-jq -r '.setup // [] | join("\n")' "$cfg" | sh -e || echo "post-checkout: worktree setup reported errors" >&2
-exit "$lfs_rc"
+
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+REGULAR_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
+REQUIRED_NAMES = {"post-checkout", "setup.sh", "version"}
+HELPER_NAME = "worktree_storage.py"
+LFS_NAME = "post-checkout-lfs"
+STAMP_PREFIX = "dotfiles-worktree-setup-success."
+SETUP_LOCK_PREFIX = "dotfiles-worktree-setup-lock."
+STAMP_TEMP_PREFIX = ".dotfiles-worktree-setup-stamp."
+STAMP_RECOVERY_PREFIX = "dotfiles-worktree-setup-stamp-recovery."
+SETUP_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+DISPATCHER_FORMAT = 1
+BUNDLE_PATH_HEX = "__BUNDLE_PATH_HEX__"
+BUNDLE_VERSION = "__BUNDLE_VERSION__"
+PINNED_GIT_PATH_HEX = "__PINNED_GIT_PATH_HEX__"
+PINNED_GIT_IDENTITY = "__PINNED_GIT_IDENTITY__"
+COMMON_GIT_PATH_HEX = "__COMMON_GIT_PATH_HEX__"
+COMMON_GIT_IDENTITY = "__COMMON_GIT_IDENTITY__"
+PRIMARY_ROOT_IDENTITY = "__PRIMARY_ROOT_IDENTITY__"
+LFS_PRELUDE: Union[bool, str] = "__LFS_PRELUDE__"
+ELF_RENAMEAT2_SYSCALLS = {
+    (1, 1, 3): 353,
+    (1, 1, 40): 382,
+    (1, 2, 40): 382,
+    (1, 1, 20): 357,
+    (1, 2, 20): 357,
+    (1, 2, 22): 347,
+    (1, 1, 62): 0x40000000 | 316,
+    (1, 1, 243): 276,
+    (2, 1, 62): 316,
+    (2, 1, 183): 276,
+    (2, 2, 183): 276,
+    (2, 1, 21): 357,
+    (2, 2, 21): 357,
+    (2, 2, 22): 347,
+    (2, 1, 243): 276,
+}
+RUNTIME_PATH_PATTERN = re.compile(rb'^BUNDLE_PATH_HEX = "[0-9a-f]*"$', re.MULTILINE)
+RUNTIME_VERSION_PATTERN = re.compile(
+    rb'^BUNDLE_VERSION = "[0-9a-f]{64}"$', re.MULTILINE
+)
+
+
+class HookError(Exception):
+    """The installed dispatcher cannot be trusted or used safely."""
+
+
+@dataclass(frozen=True)
+class OpenFile:
+    descriptor: int
+    content: bytes
+    mode: int
+
+
+@dataclass(frozen=True)
+class WorktreeAssociation:
+    git_dir_fd: int
+    linked: bool
+
+
+def linux_renameat2_syscall_number(header: bytes) -> int:
+    if len(header) < 16 or header[:4] != b"\x7fELF":
+        raise OSError(errno.ENOSYS, "current executable has an invalid ELF header")
+    elf_class = header[4]
+    elf_data = header[5]
+    if elf_class not in {1, 2} or elf_data not in {1, 2}:
+        raise OSError(errno.ENOSYS, "current executable has an unsupported ELF format")
+    header_size = 52 if elf_class == 1 else 64
+    if len(header) < header_size:
+        raise OSError(errno.ENOSYS, "current executable has a truncated ELF header")
+    if header[6] != 1 or header[7] not in {0, 3} or header[8] != 0:
+        raise OSError(errno.ENOSYS, "current executable has an unsupported ELF ABI")
+    byte_order: Literal["little", "big"] = "little" if elf_data == 1 else "big"
+
+    def field(offset: int, size: int) -> int:
+        return int.from_bytes(header[offset : offset + size], byte_order)
+
+    machine = field(18, 2)
+    if field(16, 2) not in {2, 3} or field(20, 4) != 1:
+        raise OSError(errno.ENOSYS, "current executable is not a supported ELF image")
+    flags_offset = 36 if elf_class == 1 else 48
+    header_size_offset = 40 if elf_class == 1 else 52
+    if field(header_size_offset, 2) != header_size:
+        raise OSError(errno.ENOSYS, "current executable has an invalid ELF header size")
+    if machine == 40 and field(flags_offset, 4) & 0xFF000000 not in {
+        0x04000000,
+        0x05000000,
+    }:
+        raise OSError(errno.ENOSYS, "current ARM executable does not use EABI")
+    syscall_number = ELF_RENAMEAT2_SYSCALLS.get((elf_class, elf_data, machine))
+    if syscall_number is None:
+        raise OSError(
+            errno.ENOSYS,
+            "renameat2 syscall number is unsupported for current ELF identity "
+            f"class={elf_class}, data={elf_data}, machine={machine}",
+        )
+    return syscall_number
+
+
+def linux_process_elf_header(
+    executable_path: bytes,
+    executable_identity: tuple[int, int],
+    proc_path: bytes = b"/proc/self/exe",
+) -> bytes:
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(proc_path, os.O_RDONLY | os.O_CLOEXEC)
+        except OSError:
+            if not executable_path.startswith(b"/") or b"\0" in executable_path:
+                raise OSError(errno.ENOSYS, "current executable path is invalid")
+            descriptor = os.open(
+                executable_path,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (
+                opened.st_dev,
+                opened.st_ino,
+            )
+            != executable_identity
+        ):
+            raise OSError(
+                errno.ENOSYS,
+                "current executable does not match its expected identity",
+            )
+        header = os.pread(descriptor, 64, 0)
+        if not header:
+            raise OSError(errno.ENOSYS, "current executable ELF header is unreadable")
+        return header
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def linux_renameat2(
+    library: object,
+    old_directory_fd: int,
+    old_name: bytes,
+    new_directory_fd: int,
+    new_name: bytes,
+    flags: int,
+    executable_path: bytes,
+    executable_identity: tuple[int, int],
+    proc_path: bytes = b"/proc/self/exe",
+) -> int:
+    function = getattr(library, "renameat2", None)
+    if function is not None:
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        function.restype = ctypes.c_int
+        return int(
+            function(
+                old_directory_fd,
+                old_name,
+                new_directory_fd,
+                new_name,
+                flags,
+            )
+        )
+    syscall_number = linux_renameat2_syscall_number(
+        linux_process_elf_header(executable_path, executable_identity, proc_path)
+    )
+    syscall = getattr(library, "syscall", None)
+    if syscall is None:
+        raise OSError(errno.ENOSYS, "libc does not export syscall")
+    syscall.restype = ctypes.c_long
+    return int(
+        syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_int(old_directory_fd),
+            ctypes.c_char_p(old_name),
+            ctypes.c_int(new_directory_fd),
+            ctypes.c_char_p(new_name),
+            ctypes.c_uint(flags),
+        )
+    )
+
+
+class Digest(Protocol):
+    def update(self, content: bytes) -> None:
+        ...
+
+
+def read_all(descriptor: int) -> bytes:
+    status = os.fstat(descriptor)
+    if not stat.S_ISREG(status.st_mode) or status.st_size > 16 * 1024 * 1024:
+        raise HookError("installed hook entry is not a bounded regular file")
+    content = os.pread(descriptor, status.st_size + 1, 0)
+    if len(content) != status.st_size:
+        raise HookError("installed hook entry changed while it was read")
+    return content
+
+
+def decoded_path(value: str, label: str) -> str:
+    try:
+        path = os.fsdecode(bytes.fromhex(value))
+    except ValueError as error:
+        raise HookError(f"installed {label} path is invalid") from error
+    if not os.path.isabs(path):
+        raise HookError(f"installed {label} path is not absolute")
+    return path
+
+
+def decoded_identity(value: str, label: str) -> tuple[int, int]:
+    try:
+        device, inode = value.split(":", 1)
+        return int(device, 16), int(inode, 16)
+    except ValueError as error:
+        raise HookError(f"installed {label} identity is invalid") from error
+
+
+def open_file(directory_fd: int, name: str, mode: int) -> OpenFile:
+    try:
+        descriptor = os.open(name, REGULAR_FLAGS, dir_fd=directory_fd)
+    except FileNotFoundError:
+        raise
+    except OSError as error:
+        raise HookError(f"cannot open installed {name}: {error}") from error
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or stat.S_IMODE(status.st_mode) != mode:
+            raise HookError(f"installed {name} has an unsafe type or mode")
+        return OpenFile(descriptor, read_all(descriptor), mode)
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def add_version_part(digest: Digest, name: bytes, content: bytes) -> None:
+    digest.update(len(name).to_bytes(4, "big"))
+    digest.update(name)
+    digest.update(len(content).to_bytes(8, "big"))
+    digest.update(content)
+
+
+def normalized_runtime(content: bytes) -> bytes:
+    content, path_count = RUNTIME_PATH_PATTERN.subn(
+        b'BUNDLE_PATH_HEX = "__BUNDLE_PATH_HEX__"', content
+    )
+    content, version_count = RUNTIME_VERSION_PATTERN.subn(
+        b'BUNDLE_VERSION = "__BUNDLE_VERSION__"', content
+    )
+    if path_count != 1 or version_count != 1:
+        raise HookError("installed dispatcher metadata is invalid")
+    return content
+
+
+def content_version(
+    runtime: bytes,
+    setup: bytes,
+    helper: Optional[bytes],
+    lfs_hook: Optional[bytes],
+) -> str:
+    digest = hashlib.sha256(b"skyvern-worktree-hooks-v1\0")
+    add_version_part(digest, b"post-checkout", normalized_runtime(runtime))
+    add_version_part(digest, b"setup.sh", setup)
+    if helper is None:
+        add_version_part(digest, b"worktree-storage-absent", b"")
+    else:
+        add_version_part(digest, b"worktree_storage.py", helper)
+    if lfs_hook is None:
+        add_version_part(digest, b"post-checkout-lfs-absent", b"")
+    else:
+        add_version_part(digest, b"post-checkout-lfs", lfs_hook)
+    return digest.hexdigest()
+
+
+def open_verified_bundle() -> tuple[int, dict[str, OpenFile], str, str]:
+    try:
+        bundle_path = os.fsdecode(bytes.fromhex(BUNDLE_PATH_HEX))
+    except ValueError as error:
+        raise HookError("installed dispatcher bundle path is invalid") from error
+    if (
+        not os.path.isabs(bundle_path)
+        or os.path.basename(bundle_path) != BUNDLE_VERSION
+    ):
+        raise HookError("installed dispatcher bundle identity is invalid")
+    try:
+        before = os.lstat(bundle_path)
+        if not stat.S_ISDIR(before.st_mode):
+            raise HookError("installed hook directory is not a real directory")
+        bundle_fd = os.open(bundle_path, DIRECTORY_FLAGS)
+        opened = os.fstat(bundle_fd)
+    except HookError:
+        raise
+    except OSError as error:
+        raise HookError(f"cannot pin installed hook directory: {error}") from error
+    try:
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise HookError("installed hook directory changed while it was pinned")
+        if stat.S_IMODE(opened.st_mode) != 0o500:
+            raise HookError("installed hook directory must have mode 0500")
+        names = set(os.listdir(bundle_fd))
+        expected = set(REQUIRED_NAMES)
+        if HELPER_NAME in names:
+            expected.add(HELPER_NAME)
+        if LFS_NAME in names:
+            expected.add(LFS_NAME)
+        if names != expected:
+            raise HookError("installed hook directory is not closed")
+
+        files = {
+            "post-checkout": open_file(bundle_fd, "post-checkout", 0o500),
+            "setup.sh": open_file(bundle_fd, "setup.sh", 0o400),
+            "version": open_file(bundle_fd, "version", 0o400),
+        }
+        if HELPER_NAME in names:
+            files[HELPER_NAME] = open_file(bundle_fd, HELPER_NAME, 0o400)
+        if LFS_NAME in names:
+            files[LFS_NAME] = open_file(bundle_fd, LFS_NAME, 0o500)
+        lfs_file = files.get(LFS_NAME)
+        helper_file = files.get(HELPER_NAME)
+        version = content_version(
+            files["post-checkout"].content,
+            files["setup.sh"].content,
+            helper_file.content if helper_file is not None else None,
+            lfs_file.content if lfs_file is not None else None,
+        )
+        if os.path.basename(bundle_path) != version or version != BUNDLE_VERSION:
+            raise HookError("installed hook directory name does not match its content")
+        if files["version"].content != f"{version}\n".encode():
+            raise HookError("installed hook version metadata is invalid")
+        try:
+            dispatcher_fd = os.open(os.path.abspath(__file__), REGULAR_FLAGS)
+        except OSError as error:
+            raise HookError(f"cannot pin active dispatcher: {error}") from error
+        try:
+            dispatcher_status = os.fstat(dispatcher_fd)
+            if (
+                not stat.S_ISREG(dispatcher_status.st_mode)
+                or stat.S_IMODE(dispatcher_status.st_mode) != 0o755
+                or read_all(dispatcher_fd) != files["post-checkout"].content
+            ):
+                raise HookError("active dispatcher does not match its immutable bundle")
+        finally:
+            os.close(dispatcher_fd)
+        current = os.stat(bundle_path, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise HookError("installed hook directory changed after verification")
+        return bundle_fd, files, version, bundle_path
+    except Exception:
+        os.close(bundle_fd)
+        raise
+
+
+def exact_lf_record(content: bytes, label: str) -> bytes:
+    if not content.endswith(b"\n"):
+        raise HookError(f"{label} lacks its final line-feed terminator")
+    return content[:-1]
+
+
+def record_path(content: bytes, prefix: bytes, label: str) -> bytes:
+    record = exact_lf_record(content, label)
+    if not record.startswith(prefix):
+        raise HookError(f"{label} is malformed")
+    path = record[len(prefix) :]
+    if (
+        not path
+        or b"\0" in path
+        or any(byte < 32 and byte not in {10, 13} or byte == 127 for byte in path)
+    ):
+        raise HookError(f"{label} contains invalid control bytes")
+    return path
+
+
+def path_components(path: bytes, label: str) -> list[bytes]:
+    if not path.startswith(b"/"):
+        raise HookError(f"{label} base is not absolute")
+    components = path.split(b"/")[1:]
+    if any(component in {b"", b".", b".."} for component in components):
+        raise HookError(f"{label} base is not canonical")
+    return components
+
+
+def resolve_record_path(
+    base: bytes, path: bytes, label: str
+) -> tuple[bytes, list[bytes], bool]:
+    base_components = path_components(base, label)
+    absolute = path.startswith(b"/")
+    components = path.split(b"/")[1:] if absolute else path.split(b"/")
+    if (
+        not components
+        or components[-1] in {b"", b".", b".."}
+        or any(component == b"" for component in components)
+    ):
+        raise HookError(f"{label} path has malformed components")
+    if any(component == b"." for component in components):
+        raise HookError(f"{label} path is not canonical")
+    stack: list[bytes] = [] if absolute else list(base_components)
+    minimum_depth = len(stack)
+    saw_named_component = False
+    for component in components:
+        if component == b"..":
+            if absolute or saw_named_component:
+                raise HookError(f"{label} path is not canonical")
+            if not stack:
+                raise HookError(f"{label} path escapes its expected domain")
+            stack.pop()
+            minimum_depth = min(minimum_depth, len(stack))
+            continue
+        saw_named_component = True
+        stack.append(component)
+    target = b"/" + b"/".join(stack)
+    common_depth = 0
+    for base_component, target_component in zip(base_components, stack):
+        if base_component != target_component:
+            break
+        common_depth += 1
+    if not absolute and minimum_depth < common_depth:
+        raise HookError(f"{label} path escapes its expected domain")
+    return target, components, absolute
+
+
+def open_record_target(
+    base_fd: int,
+    components: list[bytes],
+    absolute: bool,
+    expected: tuple[int, int],
+    regular: bool,
+    label: str,
+) -> int:
+    descriptor = os.open(b"/", DIRECTORY_FLAGS) if absolute else os.dup(base_fd)
+    try:
+        for index, component in enumerate(components):
+            if component == b".":
+                continue
+            final = index == len(components) - 1
+            flags = REGULAR_FLAGS if final and regular else DIRECTORY_FLAGS
+            before = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            if final:
+                expected_type = stat.S_ISREG if regular else stat.S_ISDIR
+                if not expected_type(before.st_mode):
+                    raise HookError(f"{label} has an unsafe final type")
+            elif not stat.S_ISDIR(before.st_mode):
+                raise HookError(f"{label} contains a symlink or non-directory")
+            opened_fd = os.open(component, flags, dir_fd=descriptor)
+            opened = os.fstat(opened_fd)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                os.close(opened_fd)
+                raise HookError(f"{label} changed while it was traversed")
+            os.close(descriptor)
+            descriptor = opened_fd
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != expected:
+            raise HookError(f"{label} resolved to the wrong inode")
+        result = descriptor
+        descriptor = -1
+        return result
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def open_matching_directory(path: str, expected: tuple[int, int], label: str) -> int:
+    descriptor = -1
+    try:
+        before = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode):
+            raise HookError(f"{label} is not a real directory")
+        descriptor = os.open(path, DIRECTORY_FLAGS)
+        opened = os.fstat(descriptor)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    if (before.st_dev, before.st_ino) != expected or (
+        opened.st_dev,
+        opened.st_ino,
+    ) != expected:
+        os.close(descriptor)
+        raise HookError(f"{label} identity changed")
+    return descriptor
+
+
+def read_regular_at(directory_fd: int, name: str, label: str) -> bytes:
+    descriptor = -1
+    try:
+        before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode):
+            raise HookError(f"{label} is not a regular file")
+        descriptor = os.open(name, REGULAR_FLAGS, dir_fd=directory_fd)
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise HookError(f"{label} changed while it was opened")
+        return read_all(descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def referenced_admin_matches(
+    root_fd: int,
+    current_path: bytes,
+    admin_fd: int,
+    admin_path: bytes,
+    gitdir_record: bytes,
+) -> bool:
+    backlink = record_path(gitdir_record, b"", "admin gitdir record")
+    backlink_target, backlink_components, backlink_absolute = resolve_record_path(
+        admin_path, backlink, "admin gitdir record"
+    )
+    expected_git_entry = current_path.rstrip(b"/") + b"/.git"
+    if backlink_target != expected_git_entry:
+        return False
+    git_entry_fd = -1
+    target_admin_fd = -1
+    backlink_fd = -1
+    try:
+        git_entry_before = os.stat(".git", dir_fd=root_fd, follow_symlinks=False)
+        if not stat.S_ISREG(git_entry_before.st_mode):
+            raise HookError("linked worktree .git entry is not a regular file")
+        git_entry_fd = os.open(".git", REGULAR_FLAGS, dir_fd=root_fd)
+        git_entry_status = os.fstat(git_entry_fd)
+        if (git_entry_status.st_dev, git_entry_status.st_ino) != (
+            git_entry_before.st_dev,
+            git_entry_before.st_ino,
+        ):
+            raise HookError("linked worktree .git entry changed while it was opened")
+        backlink_fd = open_record_target(
+            admin_fd,
+            backlink_components,
+            backlink_absolute,
+            (git_entry_status.st_dev, git_entry_status.st_ino),
+            True,
+            "admin gitdir record",
+        )
+        admin_record = record_path(
+            read_all(git_entry_fd), b"gitdir: ", "linked worktree .git"
+        )
+        admin_target, admin_components, admin_absolute = resolve_record_path(
+            current_path, admin_record, "linked worktree .git"
+        )
+        if admin_target != admin_path:
+            raise HookError("linked worktree .git points to a sibling admin")
+        admin_status = os.fstat(admin_fd)
+        target_admin_fd = open_record_target(
+            root_fd,
+            admin_components,
+            admin_absolute,
+            (admin_status.st_dev, admin_status.st_ino),
+            False,
+            "linked worktree admin target",
+        )
+        return True
+    finally:
+        if target_admin_fd >= 0:
+            os.close(target_admin_fd)
+        if git_entry_fd >= 0:
+            os.close(git_entry_fd)
+        if backlink_fd >= 0:
+            os.close(backlink_fd)
+
+
+def worktree_association(root_fd: int) -> tuple[int, WorktreeAssociation]:
+    common_path = decoded_path(COMMON_GIT_PATH_HEX, "common Git")
+    common_identity = decoded_identity(COMMON_GIT_IDENTITY, "common Git")
+    common_fd = open_matching_directory(
+        common_path, common_identity, "installed common Git directory"
+    )
+    matches: list[WorktreeAssociation] = []
+    worktrees_fd = -1
+    try:
+        current_path = os.getcwdb()
+        common_path_bytes = os.fsencode(common_path).rstrip(b"/")
+        root_status = os.fstat(root_fd)
+        if (root_status.st_dev, root_status.st_ino) == decoded_identity(
+            PRIMARY_ROOT_IDENTITY, "primary root"
+        ):
+            matches.append(WorktreeAssociation(os.dup(common_fd), False))
+        try:
+            worktrees_fd = os.open("worktrees", DIRECTORY_FLAGS, dir_fd=common_fd)
+        except FileNotFoundError:
+            worktrees_fd = -1
+        if worktrees_fd >= 0:
+            for name in sorted(os.listdir(worktrees_fd)):
+                admin_fd = -1
+                try:
+                    status = os.stat(name, dir_fd=worktrees_fd, follow_symlinks=False)
+                    if not stat.S_ISDIR(status.st_mode):
+                        raise HookError(
+                            "common worktrees entry is not a real directory"
+                        )
+                    admin_fd = os.open(name, DIRECTORY_FLAGS, dir_fd=worktrees_fd)
+                    opened = os.fstat(admin_fd)
+                    if (opened.st_dev, opened.st_ino) != (
+                        status.st_dev,
+                        status.st_ino,
+                    ):
+                        raise HookError("linked admin directory changed while opening")
+                    gitdir_record = read_regular_at(
+                        admin_fd, "gitdir", "linked admin gitdir record"
+                    )
+                    admin_path = common_path_bytes + b"/worktrees/" + os.fsencode(name)
+                    if referenced_admin_matches(
+                        root_fd,
+                        current_path,
+                        admin_fd,
+                        admin_path,
+                        gitdir_record,
+                    ):
+                        matches.append(WorktreeAssociation(os.dup(admin_fd), True))
+                finally:
+                    if admin_fd >= 0:
+                        os.close(admin_fd)
+        if len(matches) != 1:
+            raise HookError("pinned cwd does not match exactly one registered worktree")
+        return common_fd, matches.pop()
+    except Exception:
+        for match in matches:
+            os.close(match.git_dir_fd)
+        os.close(common_fd)
+        raise
+    finally:
+        if worktrees_fd >= 0:
+            os.close(worktrees_fd)
+
+
+def unique_stamp_name(prefix: str, version: str) -> str:
+    return f"{prefix}{version}.{os.getpid()}.{os.urandom(8).hex()}"
+
+
+def atomic_no_replace(directory_fd: int, source: str, destination: str) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if sys.platform == "darwin":
+        function = getattr(library, "renameatx_np", None)
+        if function is None:
+            raise HookError("atomic stamp recovery is unavailable on macOS")
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        result = function(
+            directory_fd, source_bytes, directory_fd, destination_bytes, 4
+        )
+    elif sys.platform.startswith("linux"):
+        result = linux_renameat2(
+            library,
+            directory_fd,
+            source_bytes,
+            directory_fd,
+            destination_bytes,
+            1,
+            *current_process_executable(),
+        )
+    else:
+        raise HookError("atomic stamp recovery is supported only on macOS and Linux")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise HookError(f"atomic stamp recovery failed: {os.strerror(error)}")
+
+
+def stamp_callback(stage: str, git_dir_fd: int, temporary_name: str) -> None:
+    callback = os.environ.get(f"POST_CHECKOUT_TEST_STAMP_{stage.upper()}")
+    if callback:
+        environment = os.environ.copy()
+        environment["POST_CHECKOUT_TEST_PINNED_GIT_FD"] = str(git_dir_fd)
+        result = subprocess.run(
+            [callback, stage, temporary_name],
+            env=environment,
+            pass_fds=(git_dir_fd,),
+        )
+        if result.returncode != 0:
+            raise HookError(f"stamp test callback failed after {stage}")
+
+
+def remove_published_temp_link(
+    git_dir_fd: int, final_status: os.stat_result, version: str
+) -> bool:
+    matching: list[tuple[str, os.stat_result]] = []
+    for candidate in os.listdir(git_dir_fd):
+        if not candidate.startswith(f"{STAMP_TEMP_PREFIX}{version}."):
+            continue
+        try:
+            status = os.stat(candidate, dir_fd=git_dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (status.st_dev, status.st_ino) == (final_status.st_dev, final_status.st_ino):
+            matching.append((candidate, status))
+    if len(matching) != 1:
+        return False
+    if not unlink_exact_stamp_temp(git_dir_fd, *matching[0]):
+        return False
+    os.fsync(git_dir_fd)
+    return True
+
+
+def unlink_exact_stamp_temp(
+    git_dir_fd: int, name: str, expected: os.stat_result
+) -> bool:
+    try:
+        current = os.stat(name, dir_fd=git_dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or current.st_uid != os.geteuid()
+        or stat.S_IMODE(current.st_mode) != 0o600
+        or (
+            current.st_dev,
+            current.st_ino,
+            current.st_mode,
+            current.st_uid,
+            current.st_nlink,
+        )
+        != (
+            expected.st_dev,
+            expected.st_ino,
+            expected.st_mode,
+            expected.st_uid,
+            expected.st_nlink,
+        )
+    ):
+        return False
+    os.unlink(name, dir_fd=git_dir_fd)
+    return True
+
+
+def existing_success_stamp(git_dir_fd: int, name: str, version: str) -> bool:
+    try:
+        stamp = open_file(git_dir_fd, name, 0o600)
+    except FileNotFoundError:
+        return False
+    except HookError as error:
+        raise HookError(f"success stamp is unsafe: {error}") from error
+    try:
+        status = os.fstat(stamp.descriptor)
+        if status.st_uid != os.geteuid():
+            raise HookError("foreign success stamp blocks setup")
+        expected = f"{version}\n".encode()
+        if stamp.content == expected:
+            if status.st_nlink == 1:
+                return True
+            if status.st_nlink == 2 and remove_published_temp_link(
+                git_dir_fd, status, version
+            ):
+                return os.fstat(stamp.descriptor).st_nlink == 1
+            raise HookError("success stamp has an unexpected hard-link count")
+        if status.st_uid != os.geteuid() or status.st_nlink != 1:
+            raise HookError("foreign success stamp blocks setup")
+        recovery = unique_stamp_name(STAMP_RECOVERY_PREFIX, version)
+        atomic_no_replace(git_dir_fd, name, recovery)
+        os.fsync(git_dir_fd)
+        recovered = open_file(git_dir_fd, recovery, 0o600)
+        try:
+            recovered_status = os.fstat(recovered.descriptor)
+            if (
+                (recovered_status.st_dev, recovered_status.st_ino)
+                != (status.st_dev, status.st_ino)
+                or recovered.content != stamp.content
+                or recovered_status.st_nlink != 1
+            ):
+                raise HookError("recovered success stamp identity is uncertain")
+        finally:
+            os.close(recovered.descriptor)
+        return False
+    finally:
+        os.close(stamp.descriptor)
+
+
+def save_success_stamp(git_dir_fd: int, name: str, version: str) -> None:
+    if existing_success_stamp(git_dir_fd, name, version):
+        return
+    temporary_name = unique_stamp_name(STAMP_TEMP_PREFIX, version)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(temporary_name, flags, 0o600, dir_fd=git_dir_fd)
+    except OSError as error:
+        raise HookError(
+            f"cannot create success stamp temporary file: {error}"
+        ) from error
+    try:
+        content = f"{version}\n".encode()
+        stamp_callback("create", git_dir_fd, temporary_name)
+        if os.write(descriptor, content) != len(content):
+            raise HookError("success stamp write was incomplete")
+        stamp_callback("write", git_dir_fd, temporary_name)
+        os.fsync(descriptor)
+        stamp_callback("fsync", git_dir_fd, temporary_name)
+    finally:
+        os.close(descriptor)
+    for _attempt in range(2):
+        try:
+            os.link(
+                temporary_name,
+                name,
+                src_dir_fd=git_dir_fd,
+                dst_dir_fd=git_dir_fd,
+                follow_symlinks=False,
+            )
+            break
+        except FileExistsError:
+            if existing_success_stamp(git_dir_fd, name, version):
+                return
+    else:
+        raise HookError("success stamp could not be published without clobbering")
+    os.fsync(git_dir_fd)
+    stamp_callback("publish", git_dir_fd, temporary_name)
+    temporary_status = os.stat(temporary_name, dir_fd=git_dir_fd, follow_symlinks=False)
+    final_status = os.stat(name, dir_fd=git_dir_fd, follow_symlinks=False)
+    if (temporary_status.st_dev, temporary_status.st_ino) != (
+        final_status.st_dev,
+        final_status.st_ino,
+    ):
+        raise HookError("published success stamp identity is uncertain")
+    stamp_callback("cleanup", git_dir_fd, temporary_name)
+    if not unlink_exact_stamp_temp(git_dir_fd, temporary_name, temporary_status):
+        raise HookError(
+            "success stamp temporary identity changed; recovery evidence was left"
+        )
+    os.fsync(git_dir_fd)
+    if not existing_success_stamp(git_dir_fd, name, version):
+        raise HookError("published success stamp failed verification")
+
+
+def pinned_git_executable() -> tuple[str, int]:
+    path = decoded_path(PINNED_GIT_PATH_HEX, "Git executable")
+    expected = decoded_identity(PINNED_GIT_IDENTITY, "Git executable")
+    descriptor = -1
+    try:
+        before = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or not before.st_mode & 0o111:
+            raise HookError("installed Git executable is unsafe")
+        descriptor = os.open(path, REGULAR_FLAGS)
+        opened = os.fstat(descriptor)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    if (before.st_dev, before.st_ino) != expected or (
+        opened.st_dev,
+        opened.st_ino,
+    ) != expected:
+        os.close(descriptor)
+        raise HookError("installed Git executable identity changed")
+    return path, descriptor
+
+
+def current_process_executable() -> tuple[bytes, tuple[int, int]]:
+    path = os.fsencode(os.path.realpath(sys.executable))
+    if not path.startswith(b"/") or b"\0" in path:
+        raise HookError("current Python executable path is invalid")
+    try:
+        status = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        raise HookError(f"current Python executable is unavailable: {error}") from error
+    if not stat.S_ISREG(status.st_mode):
+        raise HookError("current Python executable is not a regular file")
+    return path, (status.st_dev, status.st_ino)
+
+
+def runtime_git_environment(git_path: str) -> dict[str, str]:
+    home = os.environ.get("HOME", "")
+    if not home or not os.path.isabs(home):
+        raise HookError("HOME must be an absolute path for Git LFS")
+    directories = [os.path.dirname(git_path), *SETUP_PATH.split(":")]
+    return {
+        "HOME": home,
+        "PATH": ":".join(dict.fromkeys(item for item in directories if item)),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+
+
+def run_lfs(files: dict[str, OpenFile], arguments: list[str], git_path: str) -> int:
+    if LFS_NAME not in files:
+        return 0
+    return subprocess.run(
+        ["/bin/sh", "-s", "--", *arguments],
+        input=files[LFS_NAME].content,
+        env=runtime_git_environment(git_path),
+    ).returncode
+
+
+def open_setup_lock(git_dir_fd: int) -> int:
+    identity = os.fstat(git_dir_fd)
+    name = f"{SETUP_LOCK_PREFIX}{identity.st_dev:x}.{identity.st_ino:x}"
+    descriptor = os.open(
+        name,
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=git_dir_fd,
+    )
+    status = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or stat.S_IMODE(status.st_mode) != 0o600
+        or status.st_nlink != 1
+    ):
+        os.close(descriptor)
+        raise HookError("worktree setup lock is unsafe")
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    return descriptor
+
+
+def write_pipe(descriptor: int, content: bytes, errors: list[BaseException]) -> None:
+    try:
+        written = 0
+        while written < len(content):
+            count = os.write(descriptor, content[written:])
+            if count <= 0:
+                raise HookError("pinned helper pipe write made no progress")
+            written += count
+    except BaseException as error:
+        errors.append(error)
+    finally:
+        os.close(descriptor)
+
+
+def setup_environment() -> dict[str, str]:
+    home = os.environ.get("HOME", "")
+    if not home or not os.path.isabs(home):
+        raise HookError("HOME must be an absolute path for worktree setup")
+    return {
+        "HOME": home,
+        "PATH": SETUP_PATH,
+        "LANG": "C",
+        "LC_ALL": "C",
+        "CI": "1",
+        "NONINTERACTIVE": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "SUPERSET_POST_CHECKOUT": "1",
+        "SUPERSET_NO_AGENTS": "1",
+    }
+
+
+def run_setup_snapshot(
+    files: dict[str, OpenFile], root_fd: int, setup_lock_fd: int
+) -> int:
+    environment = setup_environment()
+    helper_file = files.get(HELPER_NAME)
+    helper_read = -1
+    writer: Optional[threading.Thread] = None
+    writer_errors: list[BaseException] = []
+    passed_fds = [root_fd, setup_lock_fd]
+    environment["SUPERSET_PINNED_WORKTREE_FD"] = str(root_fd)
+    if helper_file is not None:
+        helper_read, helper_write = os.pipe()
+        environment["SUPERSET_PINNED_STORAGE_FD"] = str(helper_read)
+        passed_fds.append(helper_read)
+        writer = threading.Thread(
+            target=write_pipe,
+            args=(helper_write, helper_file.content, writer_errors),
+        )
+        writer.start()
+    else:
+        environment.pop("SUPERSET_PINNED_STORAGE_FD", None)
+
+    previous_cwd_fd = os.open(".", DIRECTORY_FLAGS)
+    process: Optional[subprocess.Popen[bytes]] = None
+    try:
+        os.fchdir(root_fd)
+        process = subprocess.Popen(
+            ["/bin/bash", "--noprofile", "--norc", "-s", "--"],
+            stdin=subprocess.PIPE,
+            env=environment,
+            pass_fds=tuple(passed_fds),
+        )
+        if helper_read >= 0:
+            os.close(helper_read)
+            helper_read = -1
+        process.communicate(input=files["setup.sh"].content)
+    finally:
+        os.fchdir(previous_cwd_fd)
+        os.close(previous_cwd_fd)
+        if helper_read >= 0:
+            os.close(helper_read)
+        if writer is not None:
+            writer.join()
+    if writer_errors:
+        raise HookError(f"pinned helper pipe failed: {writer_errors[0]}")
+    if process is None:
+        raise HookError("setup process could not be created")
+    return process.returncode
+
+
+def run_test_callback(bundle_path: str) -> None:
+    callback = os.environ.get("POST_CHECKOUT_TEST_AFTER_VERIFY")
+    if callback and subprocess.run([callback, bundle_path]).returncode != 0:
+        raise HookError("post-verification test callback failed")
+
+
+def dispatch(
+    files: dict[str, OpenFile],
+    version: str,
+    bundle_path: str,
+    arguments: list[str],
+) -> int:
+    root_fd = -1
+    pinned_git_fd = -1
+    common_fd = -1
+    association: WorktreeAssociation | None = None
+    setup_lock_fd = -1
+    lfs_status = 1
+    try:
+        root_fd = os.open(".", DIRECTORY_FLAGS)
+        git_path, pinned_git_fd = pinned_git_executable()
+        if LFS_PRELUDE is True:
+            if LFS_NAME not in files:
+                raise HookError("LFS-compatible dispatcher lacks its pinned LFS hook")
+            lfs_status = 0
+        elif LFS_PRELUDE is False:
+            lfs_status = run_lfs(files, arguments, git_path)
+        else:
+            raise HookError("installed dispatcher has invalid LFS metadata")
+        if lfs_status != 0:
+            return lfs_status
+        if len(arguments) != 3 or arguments[2] != "1":
+            return lfs_status
+        common_path = decoded_path(COMMON_GIT_PATH_HEX, "common Git")
+        if os.path.dirname(os.path.dirname(bundle_path)) != common_path:
+            raise HookError("immutable bundle is outside its pinned common Git dir")
+        common_fd, association = worktree_association(root_fd)
+        if not association.linked:
+            return lfs_status
+
+        stamp_name = f"{STAMP_PREFIX}{version}"
+        setup_lock_fd = open_setup_lock(association.git_dir_fd)
+        if existing_success_stamp(association.git_dir_fd, stamp_name, version):
+            return lfs_status
+        root_fd_path = f"/dev/fd/{root_fd}"
+        if not os.path.isdir(root_fd_path):
+            raise HookError("/dev/fd is required for pinned setup execution")
+        callback = os.environ.get("POST_CHECKOUT_TEST_AFTER_WORKTREE_PIN")
+        if callback:
+            environment = os.environ.copy()
+            environment["POST_CHECKOUT_TEST_PINNED_WORKTREE_FD"] = str(root_fd)
+            if (
+                subprocess.run(
+                    [callback], env=environment, pass_fds=(root_fd,)
+                ).returncode
+                != 0
+            ):
+                raise HookError("worktree-pin test callback failed")
+        if run_setup_snapshot(files, root_fd, setup_lock_fd) != 0:
+            print(
+                "post-checkout: worktree storage setup reported errors; "
+                "checkout remains usable",
+                file=sys.stderr,
+            )
+            return lfs_status
+        save_success_stamp(association.git_dir_fd, stamp_name, version)
+        return lfs_status
+    except (HookError, OSError, subprocess.SubprocessError, ValueError) as error:
+        print(
+            "post-checkout: worktree storage setup reported errors; "
+            f"checkout remains usable: {error}",
+            file=sys.stderr,
+        )
+        return lfs_status
+    finally:
+        if setup_lock_fd >= 0:
+            os.close(setup_lock_fd)
+        if association is not None:
+            os.close(association.git_dir_fd)
+        if common_fd >= 0:
+            os.close(common_fd)
+        if pinned_git_fd >= 0:
+            os.close(pinned_git_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
+def main() -> int:
+    bundle_fd = -1
+    files: dict[str, OpenFile] = {}
+    try:
+        bundle_fd, files, version, bundle_path = open_verified_bundle()
+        run_test_callback(bundle_path)
+        return dispatch(files, version, bundle_path, sys.argv[1:])
+    except HookError as error:
+        print(f"post-checkout: {error}", file=sys.stderr)
+        return 1
+    finally:
+        for opened in files.values():
+            os.close(opened.descriptor)
+        if bundle_fd >= 0:
+            os.close(bundle_fd)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
