@@ -29,6 +29,22 @@ This section is the **canonical source** for all personal configuration. Skills 
 - Keep existing safety rules: never force push, and never push directly to `main`/`master` unless explicitly requested.
 - Respect repo `AGENTS.md` protected-path gates (CI workflows, root-level yaml, Dockerfiles, edits to existing migrations, dependency changes): those still require explicit approval before commit/push, even under this auto-commit default.
 
+# Browser Launch Policy — "Google Chrome for Testing"
+
+- "Google Chrome for Testing" (the browser that Playwright, Puppeteer, and rustwright download) MUST NOT touch the macOS Keychain. Unsafe launches fire "Chrome Safe Storage" Keychain prompts on my screen and interrupt me.
+- Every local Chrome/Chromium launch MUST include `--use-mock-keychain` (add `--password-store=basic` as well). NEVER pass `ignoreDefaultArgs: true` without re-adding `--use-mock-keychain`.
+- If a launcher cannot take these flags, do not use it. Use my real Chrome via the browser relay, a headless shell, or a Skyvern cloud browser session instead.
+- Never approve, dismiss-and-retry, or wait out a Keychain prompt. Kill the browser process and fix the launch flags first.
+- rustwright launches this browser directly in its tests. Before you run rustwright tests, confirm the launcher passes `--use-mock-keychain`. If it does not, fix the launcher first.
+
+# Docker Policy — Prohibited Without Explicit Approval
+
+- NEVER use Docker unless I explicitly approve it in the current conversation. Docker exhausts this machine's disk, memory, and CPU.
+- The ban covers all container tooling: `docker`, `docker compose`, `docker-compose`, Docker Desktop, colima, podman, lima VMs, kind/minikube, testcontainers, devcontainers, `act`, and any script, Makefile target, or test suite that starts containers.
+- Never start Docker Desktop or a container daemon as a side effect. A stopped daemon is a stop sign, not a problem to fix.
+- If a task appears to need Docker, stop and say so. Propose a non-Docker alternative (run the service natively, use remote CI such as the `blacksmith-testbox` skill, or a cloud environment) and wait for my approval.
+- Approval is per-request. A "yes" for one task does not carry over to the next task or session.
+
 # Writing Style — Simplified Technical English
 
 - Default to ASD-STE100 style for prose you write for me: short sentences (≤20-25 words), active voice, simple tenses, one meaning per word, one instruction per sentence, no dropped words.
@@ -70,12 +86,6 @@ Before pushing changes and opening a PR, ALWAYS run these steps in order. (Excep
 4. **Notify in Slack**: After the PR is created, run `/slack-pr-review` once (details in "PR Slack Notification" below).
 5. **Watch CI on the PR**: Run `/babysit-pr` — it polls the PR's CI checks, review comments, and mergeability until merge/close, retries likely-flaky failures, and fixes and pushes branch-caused failures. This replaces the removed local-CI gate: CI is validated on the PR, not locally.
 
-# Codex Subagents
-
-- If you are Fable, your job is to be the planning agent. Your tokens are about to run out, so delegate all implementation and execution work to Codex-model subagents. If you are not Fable, ignore this directive.
-- **In omp (Oh My Pi):** use the native codex agents via the Task tool — `codex-worker` (implementation/research) and `codex-reviewer` (adversarial read-only review), both on gpt-5.6-sol:xhigh via the `codex` / `codex_review` model roles. They run on the `openai-codex` provider (ChatGPT-plan OAuth) inside omp — no Codex CLI involved. Definitions: `~/.omp/agent/agents/*.md`; model roles: `modelRoles` in `~/.omp/agent/config.yml`.
-- **Outside omp (Claude Code, etc.), or if the omp codex provider is unavailable:** fall back to the CLI runtimes — `codex` (on PATH at `~/.superset/bin/codex`) or `ikonomos-codex` (`CODEX_HOME="$HOME/.codex-ikonomos" codex exec ...`; the zshrc function is interactive-only).
-- If a selected runtime is out of usage limits or otherwise unavailable, retry with a different configured Codex runtime instead of stopping.
 
 # Personal Skills
 

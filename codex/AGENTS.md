@@ -21,6 +21,22 @@
 - Spawned Codex worker subagents must NOT run git at all (no add/commit/amend/push) — the orchestrating session owns git. (A worker once amended a pushed commit and force-pushed a PR that was under review.)
 - In interactive sessions, after completing requested code changes, `git commit` and `git push` to the current working branch without asking (subject to the gates above), unless the user says not to.
 
+# Browser Launch Policy — "Google Chrome for Testing"
+
+- "Google Chrome for Testing" (the browser that Playwright, Puppeteer, and rustwright download) MUST NOT touch the macOS Keychain. Unsafe launches fire "Chrome Safe Storage" Keychain prompts on my screen and interrupt me.
+- Every local Chrome/Chromium launch MUST include `--use-mock-keychain` (add `--password-store=basic` as well). NEVER pass `ignoreDefaultArgs: true` without re-adding `--use-mock-keychain`.
+- If a launcher cannot take these flags, do not use it. Use my real Chrome via the browser relay, a headless shell, or a Skyvern cloud browser session instead.
+- Never approve, dismiss-and-retry, or wait out a Keychain prompt. Kill the browser process and fix the launch flags first.
+- rustwright launches this browser directly in its tests. Before you run rustwright tests, confirm the launcher passes `--use-mock-keychain`. If it does not, fix the launcher first.
+
+# Docker Policy — Prohibited Without Explicit Approval
+
+- NEVER use Docker unless I explicitly approve it in the current conversation. Docker exhausts this machine's disk, memory, and CPU.
+- The ban covers all container tooling: `docker`, `docker compose`, `docker-compose`, Docker Desktop, colima, podman, lima VMs, kind/minikube, testcontainers, devcontainers, `act`, and any script, Makefile target, or test suite that starts containers.
+- Never start Docker Desktop or a container daemon as a side effect. A stopped daemon is a stop sign, not a problem to fix.
+- If a task appears to need Docker, stop and say so. Propose a non-Docker alternative (run the service natively, use remote CI such as the `blacksmith-testbox` skill, or a cloud environment) and wait for my approval.
+- Approval is per-request. A "yes" for one task does not carry over to the next task or session.
+
 # User-Facing Writing
 
 - Before drafting or revising prose for people, read and apply the `writing-user-facing-content` skill. This includes Notion documents, Slack messages, emails, customer updates, announcements, and similar content.
