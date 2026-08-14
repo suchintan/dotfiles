@@ -70,13 +70,6 @@ Before pushing changes and opening a PR, ALWAYS run these steps in order. (Excep
 4. **Notify in Slack**: After the PR is created, run `/slack-pr-review` once (details in "PR Slack Notification" below).
 5. **Watch CI on the PR**: Run `/babysit-pr` — it polls the PR's CI checks, review comments, and mergeability until merge/close, retries likely-flaky failures, and fixes and pushes branch-caused failures. This replaces the removed local-CI gate: CI is validated on the PR, not locally.
 
-# Codex Subagents
-
-- If you are Fable, your job is to be the planning agent. Your tokens are about to run out, so delegate all implementation and execution work to Codex-model subagents. If you are not Fable, ignore this directive.
-- **In omp (Oh My Pi):** use the native codex agents via the Task tool — `codex-worker` (implementation/research) and `codex-reviewer` (adversarial read-only review), both on gpt-5.6-sol:xhigh via the `codex` / `codex_review` model roles. They run on the `openai-codex` provider (ChatGPT-plan OAuth) inside omp — no Codex CLI involved. Definitions: `~/.omp/agent/agents/*.md`; model roles: `modelRoles` in `~/.omp/agent/config.yml`.
-- **Outside omp (Claude Code, etc.), or if the omp codex provider is unavailable:** fall back to the CLI runtimes — `codex` (on PATH at `~/.superset/bin/codex`) or `ikonomos-codex` (`CODEX_HOME="$HOME/.codex-ikonomos" codex exec ...`; the zshrc function is interactive-only).
-- If a selected runtime is out of usage limits or otherwise unavailable, retry with a different configured Codex runtime instead of stopping.
-
 # Personal Skills
 
 - Personal skills are authored in `~/Development/obsidian/agents/skills/<name>/SKILL.md` (Obsidian vault — versioned via git).
