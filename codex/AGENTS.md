@@ -63,7 +63,7 @@ Before pushing changes and opening a PR, ALWAYS run these steps in order. (Excep
 
 - Personal skills are authored in `~/Development/obsidian/agents/skills/<name>/SKILL.md` (Obsidian vault — versioned via git).
 - Each skill is exposed to both Claude Code and Codex via per-skill symlinks in `~/.claude/skills/<name>` and `~/.codex/skills/<name>`.
-- After adding, renaming, or removing a skill in `~/Development/obsidian/agents/skills/`, run `~/Development/obsidian/agents/sync-skills.sh` to refresh symlinks. The script is idempotent and will not touch gstack or auto-generated `skyvern-cmd-*` codex skills.
+- After adding, renaming, or removing a skill in `~/Development/obsidian/agents/skills/`, run `~/Development/obsidian/agents/sync-skills.sh` to refresh symlinks. The script is idempotent and will not touch gstack or repo-owned Codex-only skills.
 - When asked to create a new personal skill, place it in `~/Development/obsidian/agents/skills/<name>/SKILL.md` and run the sync script — never write personal skills directly to `~/.claude/skills/` or `~/.codex/skills/`.
 
 # PR Slack Notification
