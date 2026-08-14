@@ -12,8 +12,10 @@ The installer symlinks shell, git, tmux, vim, Claude Code, Codex, omp, Herdr, an
 
 ## Linked Worktree Setup
 
-The post-checkout hook runs a reviewed setup entrypoint only when Git creates a
-new linked worktree. Install it from the canonical dotfiles checkout with:
+The post-checkout hook runs a reviewed setup entrypoint only for a registered
+linked worktree that lacks the current version's success stamp. This also covers
+worktrees whose first checkout was deferred with `--no-checkout` or `--orphan`.
+Install it from the canonical dotfiles checkout with:
 
 ```bash
 ./git/hooks/install-post-checkout
@@ -90,9 +92,11 @@ writer.
 
 Without Git LFS, the generated dispatcher starts as a POSIX-shell/Python
 polyglot. With Git LFS, the verified stock hook runs first and then starts the
-same Python payload. Both paths restart the exact installer-pinned Python
-interpreter with `-I -E` before Python initializes the dispatcher, so
-`PYTHONPATH`, user-site startup, and adjacent import shadows cannot run first.
+same Python payload. Both paths select Python 3.10+ only from the fixed trusted
+system candidates `/opt/homebrew/bin/python3`, `/usr/local/bin/python3`, and
+`/usr/bin/python3`, then restart it with `-I -E`. Interpreter upgrades at those
+trusted paths do not require reinstalling the hook. `PYTHONPATH`, user-site
+startup, and adjacent import shadows cannot run first.
 The isolated dispatcher verifies the closed bundle through retained file
 descriptors. It does not discover Git through `PATH` or run Git to identify the
 worktree. It pins its cwd first, opens the installed common Git directory by its

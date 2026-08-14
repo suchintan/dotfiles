@@ -54,7 +54,6 @@ RUNTIME_VERSION_PATTERN = re.compile(
 )
 TEMPLATE_PATH_LINE = b'BUNDLE_PATH_HEX = "__BUNDLE_PATH_HEX__"'
 TEMPLATE_VERSION_LINE = b'BUNDLE_VERSION = "__BUNDLE_VERSION__"'
-TEMPLATE_INTERPRETER_LINE = b'exec __PINNED_PYTHON_SHELL__ -I -E "$0" "$@"'
 MINIMUM_GIT_VERSION = (2, 36)
 SETUP_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 TRUSTED_GIT_CANDIDATES = (
@@ -64,8 +63,6 @@ TRUSTED_GIT_CANDIDATES = (
 )
 TEMPLATE_GIT_PATH_LINE = b'PINNED_GIT_PATH_HEX = "__PINNED_GIT_PATH_HEX__"'
 TEMPLATE_GIT_IDENTITY_LINE = b'PINNED_GIT_IDENTITY = "__PINNED_GIT_IDENTITY__"'
-TEMPLATE_PYTHON_PATH_LINE = b'PINNED_PYTHON_PATH_HEX = "__PINNED_PYTHON_PATH_HEX__"'
-TEMPLATE_PYTHON_IDENTITY_LINE = b'PINNED_PYTHON_IDENTITY = "__PINNED_PYTHON_IDENTITY__"'
 TEMPLATE_COMMON_PATH_LINE = b'COMMON_GIT_PATH_HEX = "__COMMON_GIT_PATH_HEX__"'
 TEMPLATE_COMMON_IDENTITY_LINE = b'COMMON_GIT_IDENTITY = "__COMMON_GIT_IDENTITY__"'
 TEMPLATE_PRIMARY_IDENTITY_LINE = b'PRIMARY_ROOT_IDENTITY = "__PRIMARY_ROOT_IDENTITY__"'
@@ -106,14 +103,6 @@ class Digest(Protocol):
 
 @dataclass(frozen=True)
 class DirectoryPin:
-    path: str
-    descriptor: int
-    device: int
-    inode: int
-
-
-@dataclass(frozen=True)
-class InterpreterPin:
     path: str
     descriptor: int
     device: int
@@ -231,7 +220,7 @@ def linux_process_elf_header(
             descriptor = os.open(proc_path, os.O_RDONLY | os.O_CLOEXEC)
         except OSError:
             if not executable_path.startswith(b"/") or b"\0" in executable_path:
-                raise OSError(errno.ENOSYS, "pinned executable path is invalid")
+                raise OSError(errno.ENOSYS, "current executable path is invalid")
             descriptor = os.open(
                 executable_path,
                 os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
@@ -247,7 +236,7 @@ def linux_process_elf_header(
         ):
             raise OSError(
                 errno.ENOSYS,
-                "current executable does not match its pinned identity",
+                "current executable does not match its expected identity",
             )
         header = os.pread(descriptor, 64, 0)
         if not header:
@@ -422,43 +411,6 @@ def pin_directory(path: str, label: str) -> DirectoryPin:
     return DirectoryPin(path, descriptor, opened.st_dev, opened.st_ino)
 
 
-def pin_interpreter() -> InterpreterPin:
-    path = os.path.realpath(sys.executable)
-    if not os.path.isabs(path) or any(character in path for character in "\0\r\n"):
-        raise fail("the Python interpreter path cannot be encoded safely in the hook")
-    descriptor = -1
-    try:
-        before = os.lstat(path)
-        if not stat.S_ISREG(before.st_mode) or not before.st_mode & 0o111:
-            raise fail(f"Python interpreter is not an executable regular file: {path}")
-        descriptor = os.open(path, REGULAR_FLAGS)
-        opened = os.fstat(descriptor)
-    except Exception:
-        if descriptor >= 0:
-            os.close(descriptor)
-        raise
-    if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-        os.close(descriptor)
-        raise fail("Python interpreter changed while it was pinned")
-    return InterpreterPin(path, descriptor, opened.st_dev, opened.st_ino)
-
-
-def assert_interpreter_pin(pin: InterpreterPin) -> None:
-    opened = os.fstat(pin.descriptor)
-    try:
-        current = os.stat(pin.path, follow_symlinks=False)
-    except OSError as error:
-        raise fail(
-            f"Python interpreter changed during installation: {error}"
-        ) from error
-    if (
-        not stat.S_ISREG(current.st_mode)
-        or (current.st_dev, current.st_ino) != (pin.device, pin.inode)
-        or (opened.st_dev, opened.st_ino) != (pin.device, pin.inode)
-    ):
-        raise fail("Python interpreter changed during installation")
-
-
 def pin_git_executable() -> GitPin:
     for candidate in TRUSTED_GIT_CANDIDATES:
         path = os.path.realpath(candidate)
@@ -480,6 +432,19 @@ def pin_git_executable() -> GitPin:
                 os.close(descriptor)
             raise
     raise fail("Git was not found at a trusted absolute system path")
+
+
+def current_process_executable() -> tuple[bytes, tuple[int, int]]:
+    path = os.fsencode(os.path.realpath(sys.executable))
+    if not path.startswith(b"/") or b"\0" in path:
+        raise fail("current Python executable path is invalid")
+    try:
+        status = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        raise fail(f"current Python executable is unavailable: {error}") from error
+    if not stat.S_ISREG(status.st_mode):
+        raise fail("current Python executable is not a regular file")
+    return path, (status.st_dev, status.st_ino)
 
 
 def assert_git_pin(pin: GitPin) -> None:
@@ -1148,39 +1113,25 @@ def content_version(
     return digest.hexdigest()
 
 
-def render_interpreter(template: bytes, interpreter: InterpreterPin) -> bytes:
-    encoded = os.fsencode(interpreter.path)
-    if any(character in encoded for character in (b"\0", b"\r", b"\n")):
-        raise fail("the Python interpreter path cannot be encoded safely in the hook")
-    quoted = b"'" + encoded.replace(b"'", b"'\"'\"'") + b"'"
-    replacement = b"exec " + quoted + b' -I -E "$0" "$@"'
-    rendered, count = template.replace(
-        TEMPLATE_INTERPRETER_LINE, replacement
-    ), template.count(TEMPLATE_INTERPRETER_LINE)
-    if count != 1:
-        raise fail("runtime interpreter placeholder is invalid")
-    rendered = replace_template_line(
-        rendered,
-        TEMPLATE_PYTHON_PATH_LINE,
-        f'PINNED_PYTHON_PATH_HEX = "{encoded.hex()}"'.encode(),
-    )
-    return replace_template_line(
-        rendered,
-        TEMPLATE_PYTHON_IDENTITY_LINE,
-        (
-            f'PINNED_PYTHON_IDENTITY = "{interpreter.device:x}:'
-            f'{interpreter.inode:x}"'
-        ).encode(),
-    )
-
-
 def shell_quote(content: bytes) -> bytes:
     return b"'" + content.replace(b"'", b"'\"'\"'") + b"'"
 
 
+def trusted_python_launcher(arguments: bytes) -> bytes:
+    return (
+        b"for python in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do\n"
+        b"    if [ -x \"$python\" ] && \"$python\" -I -E -c "
+        b"'import sys; raise SystemExit(sys.version_info < (3, 10))'; then\n"
+        b'        exec "$python" '
+        + arguments
+        + b"\n    fi\ndone\n"
+        b"printf '%s\\n' 'post-checkout: Python 3.10+ is required at a trusted system path' >&2\n"
+        b"exit 1"
+    )
+
+
 def render_lfs_runtime(
     template: bytes,
-    interpreter: InterpreterPin,
     lfs_hook: bytes | None,
 ) -> bytes:
     rendered = replace_template_line(
@@ -1201,7 +1152,7 @@ def render_lfs_runtime(
         raise fail("runtime polyglot delimiter is invalid")
     payload = rendered.split(delimiter, 1)[1]
     payload_digest = hashlib.sha256(normalized_runtime(payload)).hexdigest()
-    marker = b"\n# skyvern-pinned-python-payload-v1\n"
+    marker = b"\n# skyvern-isolated-python-payload-v1\n"
     loader = f"""import sys as s
 if s.flags.isolated != 1 or s.flags.ignore_environment != 1:
     raise SystemExit("post-checkout: isolated Python restart failed")
@@ -1260,11 +1211,10 @@ exec(compile(z, p, "exec"), g, g)
     command = (
         b"\nlfs_status=$?\n"
         b'[ "$lfs_status" -eq 0 ] || exit "$lfs_status"\n'
-        b"exec "
-        + shell_quote(os.fsencode(interpreter.path))
-        + b" -I -E -c "
-        + shell_quote(loader)
-        + b' "$0" "$@"\nexit 1'
+        + trusted_python_launcher(
+            b"-I -E -c " + shell_quote(loader) + b' "$0" "$@"',
+        )
+        + b"\nexit 1"
         + marker
         + payload
     )
@@ -1736,7 +1686,7 @@ def atomic_exchange(directory_fd: int, first: str, second: str) -> None:
         result = function(directory_fd, first_bytes, directory_fd, second_bytes, 2)
     elif sys.platform.startswith("linux"):
         if _process_executable is None:
-            raise fail("Python executable identity is not pinned")
+            raise fail("current Python executable identity is unavailable")
         result = linux_renameat2(
             library,
             directory_fd,
@@ -1911,6 +1861,7 @@ def publish_dispatcher(
     prepared_name, prepared_fd = create_prepared_dispatcher(hook_pin.directory, content)
     prepared_path = os.path.join(hook_pin.directory.path, prepared_name)
     try:
+        expected_dispatcher = prepared_object(prepared_fd, content)
         run_test_hook(
             "INSTALL_POST_CHECKOUT_TEST_AFTER_PREPARE",
             repository.root.path,
@@ -1953,6 +1904,29 @@ def publish_dispatcher(
             )
         if hook_pin.identity is None:
             os.fsync(hook_pin.directory.descriptor)
+        os.close(prepared_fd)
+        prepared_fd = -1
+        published = open_regular_at(
+            hook_pin.directory.descriptor,
+            RUNTIME_NAME,
+            "published dispatcher",
+        )
+        prepared_fd = published.descriptor
+        published_status = os.fstat(prepared_fd)
+        if (
+            PathObject(
+                published_status.st_dev,
+                published_status.st_ino,
+                published_status.st_mode,
+                published.content,
+                None,
+            )
+            != expected_dispatcher
+        ):
+            raise fail(
+                "published dispatcher changed while reopening read-only; "
+                "inspect hooks manually"
+            )
         run_test_hook(
             "INSTALL_POST_CHECKOUT_TEST_AFTER_PUBLICATION",
             repository.root.path,
@@ -1977,7 +1951,8 @@ def publish_dispatcher(
             raise fail("published hooks state is uncertain; inspect hooks manually")
         return True
     finally:
-        os.close(prepared_fd)
+        if prepared_fd >= 0:
+            os.close(prepared_fd)
 
 
 def write_pipe(descriptor: int, content: bytes, errors: list[BaseException]) -> None:
@@ -2100,7 +2075,7 @@ def atomic_no_replace(directory_fd: int, source: str, destination: str) -> None:
         )
     elif sys.platform.startswith("linux"):
         if _process_executable is None:
-            raise fail("Python executable identity is not pinned")
+            raise fail("current Python executable identity is unavailable")
         result = linux_renameat2(
             library,
             directory_fd,
@@ -2728,7 +2703,6 @@ def backfill_worktrees(
 def install_repository(
     requested: str,
     runtime_template: bytes,
-    interpreter: InterpreterPin,
     git_pin: GitPin,
 ) -> None:
     repository = resolve_repository(requested)
@@ -2744,7 +2718,6 @@ def install_repository(
             repository.root.path,
             repository.common.path,
         )
-        assert_interpreter_pin(interpreter)
         assert_git_pin(git_pin)
         assert_repository_pins(repository)
         initial_hooks = inspect_hooks(repository)
@@ -2755,9 +2728,7 @@ def install_repository(
         repository_runtime = render_runtime_identity(
             runtime_template, repository, git_pin
         )
-        repository_runtime = render_lfs_runtime(
-            repository_runtime, interpreter, lfs_hook
-        )
+        repository_runtime = render_lfs_runtime(repository_runtime, lfs_hook)
         version_name = content_version(
             repository_runtime, sources.setup, sources.helper, lfs_hook
         )
@@ -2783,7 +2754,6 @@ def install_repository(
         )
 
         assert_repository_pins(repository)
-        assert_interpreter_pin(interpreter)
         assert_git_pin(git_pin)
         assert_child_pin(repository.common, root, ROOT_NAME)
         assert_child_pin(root, version, version_name)
@@ -2844,7 +2814,6 @@ def install_repository(
         os.close(checked.descriptor)
         for opened in checked_files.values():
             os.close(opened.descriptor)
-        assert_interpreter_pin(interpreter)
         assert_git_pin(git_pin)
         action = "installed" if published else "already current"
         print(f"install-post-checkout: {action} {version_name}: {repository.root.path}")
@@ -2883,7 +2852,6 @@ def main(arguments: list[str]) -> int:
         usage()
         return 0
     source: Repository | None = None
-    interpreter: InterpreterPin | None = None
     git_pin: GitPin | None = None
     try:
         git_pin = pin_git_executable()
@@ -2892,12 +2860,7 @@ def main(arguments: list[str]) -> int:
         script_directory = os.path.dirname(os.path.realpath(__file__))
         source = resolve_source_repository(script_directory)
         runtime_template = read_runtime_template(source, script_directory)
-        interpreter = pin_interpreter()
-        _process_executable = (
-            os.fsencode(interpreter.path),
-            (interpreter.device, interpreter.inode),
-        )
-        runtime = render_interpreter(runtime_template, interpreter)
+        _process_executable = current_process_executable()
     except (InstallError, OSError, subprocess.SubprocessError) as error:
         print(f"install-post-checkout: {error}", file=sys.stderr)
         return 1
@@ -2909,11 +2872,10 @@ def main(arguments: list[str]) -> int:
         status = 0
         for repository in repositories:
             try:
-                assert_interpreter_pin(interpreter)
                 assert_git_pin(git_pin)
                 if read_runtime_template(source, script_directory) != runtime_template:
                     raise fail("dispatcher template changed during installation")
-                install_repository(repository, runtime, interpreter, git_pin)
+                install_repository(repository, runtime_template, git_pin)
                 if read_runtime_template(source, script_directory) != runtime_template:
                     raise fail("dispatcher template changed during installation")
             except (InstallError, OSError, subprocess.SubprocessError) as error:
@@ -2921,7 +2883,6 @@ def main(arguments: list[str]) -> int:
                 status = 1
         return status
     finally:
-        os.close(interpreter.descriptor)
         os.close(git_pin.descriptor)
         os.close(source.common.descriptor)
         os.close(source.git_dir.descriptor)

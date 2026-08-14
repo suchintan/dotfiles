@@ -532,6 +532,76 @@ os.execv({real_git!r}, [{real_git!r}, *arguments])
         ).read_text()
         self.assertNotIn("--path-format=absolute", sources)
 
+    def test_no_checkout_worktree_runs_setup_on_later_checkout(self) -> None:
+        repository = self.new_repository("no checkout lifecycle")
+        self.add_sources(repository)
+        self.install(repository)
+        branch = "no-checkout-branch"
+        self.git(repository, "branch", branch)
+        linked = self.root / "no-checkout-worktree"
+        added = self.run_command(
+            [
+                "git",
+                "-C",
+                repository,
+                "worktree",
+                "add",
+                "-q",
+                "--no-checkout",
+                linked,
+                branch,
+            ],
+            check=False,
+        )
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertFalse((linked / ".setup-ran").exists())
+        self.assertEqual(self.stamps(linked), [])
+
+        checked_out = self.git(linked, "checkout", "-q", "-f", "HEAD", check=False)
+        self.assertEqual(checked_out.returncode, 0, checked_out.stderr)
+        self.assertEqual((linked / ".setup-ran").read_text(), "setup-only snapshot\n")
+        self.assertEqual(len(self.stamps(linked)), 1)
+
+    def test_orphan_worktree_runs_setup_on_later_checkout_when_supported(self) -> None:
+        repository = self.new_repository("orphan lifecycle")
+        self.add_sources(repository)
+        self.install(repository)
+        return_branch = "orphan-return-branch"
+        self.git(repository, "branch", return_branch)
+        linked = self.root / "orphan-worktree"
+        added = self.run_command(
+            [
+                "git",
+                "-C",
+                repository,
+                "worktree",
+                "add",
+                "-q",
+                "--orphan",
+                "-b",
+                "orphan-lifecycle-branch",
+                linked,
+            ],
+            check=False,
+        )
+        if added.returncode != 0 and re.search(
+            r"(?:unknown|unrecognized) option.*orphan", added.stderr
+        ):
+            self.skipTest("installed Git does not support worktree add --orphan")
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertFalse((linked / ".setup-ran").exists())
+        self.assertEqual(self.stamps(linked), [])
+        (linked / "orphan.txt").write_text("orphan\n")
+        self.git(linked, "add", "orphan.txt")
+        self.git(linked, "commit", "-qm", "orphan seed")
+
+        checked_out = self.git(
+            linked, "checkout", "-q", return_branch, check=False
+        )
+        self.assertEqual(checked_out.returncode, 0, checked_out.stderr)
+        self.assertEqual((linked / ".setup-ran").read_text(), "setup-only snapshot\n")
+        self.assertEqual(len(self.stamps(linked)), 1)
+
     def test_git_236_minimum_is_enforced_before_repository_work(self) -> None:
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)
@@ -1226,22 +1296,6 @@ path.chmod(0o500)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(sentinel.exists())
 
-        virtual_environment = self.root / "runtime venv"
-        self.run_command(
-            [sys.executable, "-m", "venv", "--without-pip", virtual_environment]
-        )
-        interpreters = [virtual_environment / "bin/python3"]
-        if Path("/usr/bin/python3").is_file():
-            interpreters.append(Path("/usr/bin/python3"))
-        for interpreter in interpreters:
-            checked = self.run_command(
-                [interpreter, "-I", "-E", hook, "1" * 40, "2" * 40, "1"],
-                cwd=repository,
-                env={"PYTHONPATH": str(hostile)},
-                check=False,
-            )
-            self.assertEqual(checked.returncode, 0, checked.stderr)
-
         bundle = self.bundle_from_hook(hook)
         bundle.chmod(0o700)
         self.add_hostile_modules(bundle, sentinel)
@@ -1870,7 +1924,7 @@ time.sleep(0.35)
             selector(self.elf_header(1, 1, 40, flags=0))
         self.assertEqual(error.exception.errno, errno.ENOSYS)
 
-    def test_linux_process_elf_fallback_requires_exact_pinned_identity(self) -> None:
+    def test_linux_process_elf_fallback_requires_exact_current_identity(self) -> None:
         namespace = self.linux_helper_namespace(INSTALLER)
         reader = cast(
             Callable[[bytes, tuple[int, int], bytes], bytes],
@@ -1879,7 +1933,7 @@ time.sleep(0.35)
         header = self.elf_header(2, 1, 62)
         path, identity = self.elf_file(header)
         self.assertEqual(reader(path, identity, b"/missing-proc-self-exe"), header)
-        with self.assertRaisesRegex(OSError, "does not match its pinned identity"):
+        with self.assertRaisesRegex(OSError, "does not match its expected identity"):
             reader(path, (identity[0], identity[1] + 1), b"/missing-proc-self-exe")
 
     def test_linux_process_elf_fallback_rejects_unreadable_or_invalid_path(
@@ -1892,7 +1946,7 @@ time.sleep(0.35)
         )
         with self.assertRaises(OSError):
             reader(b"/missing-pinned-python", (1, 1), b"/missing-proc-self-exe")
-        with self.assertRaisesRegex(OSError, "pinned executable path is invalid"):
+        with self.assertRaisesRegex(OSError, "current executable path is invalid"):
             reader(b"relative-python", (1, 1), b"/missing-proc-self-exe")
 
     def test_linux_renameat2_syscall_fallback_success(self) -> None:

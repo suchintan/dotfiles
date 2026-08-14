@@ -1,6 +1,14 @@
 #!/bin/sh
 """:"
-exec __PINNED_PYTHON_SHELL__ -I -E "$0" "$@"
+for python in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [ -x "$python" ] && "$python" -I -E -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+        exec "$python" -I -E "$0" "$@"
+    fi
+done
+printf '%s\n' 'post-checkout: Python 3.10+ is required at a trusted system path' >&2
+exit 1
+# Python parses this closing polyglot delimiter.
+# shellcheck disable=SC2317
 ":"""
 import sys as _bootstrap_sys
 
@@ -54,14 +62,11 @@ SETUP_LOCK_PREFIX = "dotfiles-worktree-setup-lock."
 STAMP_TEMP_PREFIX = ".dotfiles-worktree-setup-stamp."
 STAMP_RECOVERY_PREFIX = "dotfiles-worktree-setup-stamp-recovery."
 SETUP_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-NULL_OIDS = {"0" * 40, "0" * 64}
 DISPATCHER_FORMAT = 1
 BUNDLE_PATH_HEX = "__BUNDLE_PATH_HEX__"
 BUNDLE_VERSION = "__BUNDLE_VERSION__"
 PINNED_GIT_PATH_HEX = "__PINNED_GIT_PATH_HEX__"
 PINNED_GIT_IDENTITY = "__PINNED_GIT_IDENTITY__"
-PINNED_PYTHON_PATH_HEX = "__PINNED_PYTHON_PATH_HEX__"
-PINNED_PYTHON_IDENTITY = "__PINNED_PYTHON_IDENTITY__"
 COMMON_GIT_PATH_HEX = "__COMMON_GIT_PATH_HEX__"
 COMMON_GIT_IDENTITY = "__COMMON_GIT_IDENTITY__"
 PRIMARY_ROOT_IDENTITY = "__PRIMARY_ROOT_IDENTITY__"
@@ -156,7 +161,7 @@ def linux_process_elf_header(
             descriptor = os.open(proc_path, os.O_RDONLY | os.O_CLOEXEC)
         except OSError:
             if not executable_path.startswith(b"/") or b"\0" in executable_path:
-                raise OSError(errno.ENOSYS, "pinned executable path is invalid")
+                raise OSError(errno.ENOSYS, "current executable path is invalid")
             descriptor = os.open(
                 executable_path,
                 os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
@@ -172,7 +177,7 @@ def linux_process_elf_header(
         ):
             raise OSError(
                 errno.ENOSYS,
-                "current executable does not match its pinned identity",
+                "current executable does not match its expected identity",
             )
         header = os.pread(descriptor, 64, 0)
         if not header:
@@ -701,8 +706,7 @@ def atomic_no_replace(directory_fd: int, source: str, destination: str) -> None:
             directory_fd,
             destination_bytes,
             1,
-            os.fsencode(decoded_path(PINNED_PYTHON_PATH_HEX, "Python executable")),
-            decoded_identity(PINNED_PYTHON_IDENTITY, "Python executable"),
+            *current_process_executable(),
         )
     else:
         raise HookError("atomic stamp recovery is supported only on macOS and Linux")
@@ -897,6 +901,19 @@ def pinned_git_executable() -> tuple[str, int]:
     return path, descriptor
 
 
+def current_process_executable() -> tuple[bytes, tuple[int, int]]:
+    path = os.fsencode(os.path.realpath(sys.executable))
+    if not path.startswith(b"/") or b"\0" in path:
+        raise HookError("current Python executable path is invalid")
+    try:
+        status = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        raise HookError(f"current Python executable is unavailable: {error}") from error
+    if not stat.S_ISREG(status.st_mode):
+        raise HookError("current Python executable is not a regular file")
+    return path, (status.st_dev, status.st_ino)
+
+
 def runtime_git_environment(git_path: str) -> dict[str, str]:
     home = os.environ.get("HOME", "")
     if not home or not os.path.isabs(home):
@@ -1054,7 +1071,7 @@ def dispatch(
             raise HookError("installed dispatcher has invalid LFS metadata")
         if lfs_status != 0:
             return lfs_status
-        if len(arguments) != 3 or arguments[0] not in NULL_OIDS or arguments[2] != "1":
+        if len(arguments) != 3 or arguments[2] != "1":
             return lfs_status
         common_path = decoded_path(COMMON_GIT_PATH_HEX, "common Git")
         if os.path.dirname(os.path.dirname(bundle_path)) != common_path:
