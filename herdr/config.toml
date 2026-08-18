@@ -20,6 +20,15 @@ rows = [
     ["workspace", "tab"],
 ]
 
+# Space rows: workspace name, then branch + git status + PR status.
+# $pr is a custom workspace-metadata token fed by pr-status-reporter.sh
+# (launchd: com.suchintan.herdr-pr-status) via `herdr workspace report-metadata`.
+[ui.sidebar.spaces]
+rows = [
+    ["state_icon", "workspace"],
+    ["branch", "git_status", { token = "$pr", fg = "#89b4fa", bold = true }],
+]
+
 [keys]
 # Tab switching on tab / shift+tab (defaults were prefix+n / prefix+p).
 next_tab = "prefix+tab"

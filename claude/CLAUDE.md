@@ -29,6 +29,30 @@ This section is the **canonical source** for all personal configuration. Skills 
 - Keep existing safety rules: never force push, and never push directly to `main`/`master` unless explicitly requested.
 - Respect repo `AGENTS.md` protected-path gates (CI workflows, root-level yaml, Dockerfiles, edits to existing migrations, dependency changes): those still require explicit approval before commit/push, even under this auto-commit default.
 
+# Obsidian Vault Repo — main only
+
+- `~/Development/obsidian` is a live Obsidian vault, not a code checkout. The
+  `obsidian-git` plugin auto-commits and pushes every file change.
+- This checkout stays on `main`. Commit and push directly to `main` there. This
+  is the explicit exception to the "never push directly to main" rule above.
+- NEVER run `git checkout -b`, `git switch -c`, `git checkout <branch>`,
+  `git reset --hard`, or `git stash` in that directory — from any cwd, including
+  through `git -C`. A branch switch deletes every note and skill the target
+  branch lacks, and the plugin commits the deletion.
+- Need a branch there? Use a linked worktree:
+  `git worktree add ~/Development/worktrees/obsidian/<name> -b <branch>`.
+- A `post-checkout` hook (`agents/git-hooks/post-checkout`, enabled via
+  `core.hooksPath`) returns the vault checkout to `main` automatically. Linked
+  worktrees are exempt. Full rules: `~/Development/obsidian/AGENTS.md`.
+
+# Testing Preference — Avoid Unit Tests
+
+- Avoid unit tests whenever possible. Validate changes by running the real thing end to end: live scripts against real processes, real browsers, smoke runs, and API calls. Follow Test Execution Location below for where each check runs.
+
+- Do not write new unit tests by default. Add one only when I ask, or when a reviewer/CI gate makes it unavoidable — and then the minimum.
+- When an intentional change breaks existing CI-gated unit tests, migrate only what CI requires to go green. Do not expand coverage while doing so.
+- This is not license to delete or weaken existing tests (especially security assertions) — CI stays green; the preference governs new effort, not existing suites.
+
 # Browser Launch Policy — "Google Chrome for Testing"
 
 - "Google Chrome for Testing" (the browser that Playwright, Puppeteer, and rustwright download) MUST NOT touch the macOS Keychain. Unsafe launches fire "Chrome Safe Storage" Keychain prompts on my screen and interrupt me.
@@ -37,13 +61,46 @@ This section is the **canonical source** for all personal configuration. Skills 
 - Never approve, dismiss-and-retry, or wait out a Keychain prompt. Kill the browser process and fix the launch flags first.
 - rustwright launches this browser directly in its tests. Before you run rustwright tests, confirm the launcher passes `--use-mock-keychain`. If it does not, fix the launcher first.
 
-# Docker Policy — Prohibited Without Explicit Approval
+# Local Docker Policy — Prohibited Without Explicit Approval
 
-- NEVER use Docker unless I explicitly approve it in the current conversation. Docker exhausts this machine's disk, memory, and CPU.
-- The ban covers all container tooling: `docker`, `docker compose`, `docker-compose`, Docker Desktop, colima, podman, lima VMs, kind/minikube, testcontainers, devcontainers, `act`, and any script, Makefile target, or test suite that starts containers.
-- Never start Docker Desktop or a container daemon as a side effect. A stopped daemon is a stop sign, not a problem to fix.
-- If a task appears to need Docker, stop and say so. Propose a non-Docker alternative (run the service natively, use remote CI such as the `blacksmith-testbox` skill, or a cloud environment) and wait for my approval.
-- Approval is per-request. A "yes" for one task does not carry over to the next task or session.
+- NEVER use Docker on the local workstation unless I explicitly approve it in
+  the current conversation. Docker exhausts this machine's disk, memory, and
+  CPU.
+- The local ban covers all container tooling: `docker`, `docker compose`,
+  `docker-compose`, Docker Desktop, colima, podman, lima VMs, kind/minikube,
+  Testcontainers, devcontainers, `act`, and any script, Makefile target, or
+  test suite that starts containers.
+- Never start Docker Desktop or a local container daemon as a side effect. A
+  stopped daemon is a stop sign, not a problem to fix.
+- If a task appears to need local Docker, stop and say so. Propose a non-Docker
+  local alternative or use remote CI, a Blacksmith testbox, or a cloud
+  environment.
+- Docker inside remote CI or a Blacksmith testbox does not require local-Docker
+  approval.
+- Local approval is per-request. A "yes" for one task does not carry over to
+  the next task or session.
+
+# Test Execution Location
+
+- The `unit-tests` skill chooses the pytest command and test selection. This
+  section controls where the command runs. These rules override any skill text
+  or bare command that implies local execution.
+- Testbox mode is active when a warmed Blacksmith testbox ID is available. In
+  this mode, run each CI-equivalent test-skill command with
+  `blacksmith testbox run --id "$TBX_ID" '. /tmp/.testbox/command-env && <command>'`.
+  Do not repeat it locally.
+- The `--id` form above overrides conflicting Testbox CLI examples in a skill.
+  The Testbox workflow only hydrates the environment. Do not claim test
+  evidence until a `testbox run` command finishes successfully.
+- Without a warmed Blacksmith testbox ID, run only focused changed-behavior
+  checks locally. The checks must not use Docker or Testcontainers. Leave the
+  full suite to PR CI.
+- Run `tests/isolation/`, Docker smoke, and Testcontainers only on a remote CI
+  runner or Blacksmith testbox. Local runs require explicit approval for local
+  Docker in the current request.
+- Blacksmith testboxes are remote VMs, not Testcontainers.
+- Standard CI runs on Blacksmith for upstream PRs. It uses a GitHub-hosted
+  fallback for forks. Isolation remains a separate path-gated remote job.
 
 # Writing Style — Simplified Technical English
 
@@ -77,7 +134,7 @@ This section is the **canonical source** for all personal configuration. Skills 
 Before pushing changes and opening a PR, ALWAYS run these steps in order. (Exception: if `/battletest-changes-before-pr` or `/prepare-pr` ran the flow end-to-end, it already covers these steps — don't run this checklist again on top of it.)
 
 1. **Self-Review**: Run `/review`, then `/simplify` (a Claude Code built-in — if unavailable in the current harness, skip it and say so), then `/codex review`, in that order. Address any critical or correctness comments before proceeding; skip purely stylistic feedback that pre-commit hooks handle. If `/codex review` can't run because of a configuration issue (e.g., the Codex CLI isn't installed or authenticated), skip it and continue — but tell me it was skipped and that I should probably set it up.
-2. **Push**: Only after review comments are addressed, push the changes. Do not run the CI suite locally (`/verify`, full pytest/vitest/tsc/mypy) as a pre-push gate — the PR's CI run validates it; run local checks only when I explicitly ask.
+2. **Push**: Only after review comments are addressed, push the changes. Do not run the full CI suite locally (`/verify`, full pytest/vitest/tsc/mypy) as a pre-push gate. When a warmed Blacksmith testbox ID is available, use it for CI-equivalent commands; otherwise let PR CI validate them. Focused changed-behavior checks may run locally only when they do not use Docker or Testcontainers. Local Docker remains prohibited unless explicitly approved for the current request.
 3. **Open the PR**: Include evidence of the change in the PR description:
    - **Frontend change** → before/after screenshots of the affected UI.
    - Save PR screenshot evidence under `tmp/pr-screenshots/` in the current repo/worktree before uploading or referencing it.

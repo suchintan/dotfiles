@@ -1,8 +1,11 @@
-modelRoles: 
-  codex: openai-codex/gpt-5.6-sol:xhigh
+modelRoles:
+  codex: openai-codex/gpt-5.6-luna:xhigh
+  codex_control: openai-codex/gpt-5.6-sol:xhigh
+  codex_treatment: openai-codex/gpt-5.6-luna:xhigh
+  codex_treatment_max: openai-codex/gpt-5.6-luna:max
   codex_review: openai-codex/gpt-5.6-sol:xhigh
-  default: anthropic/claude-fable-5:max
-defaultThinkingLevel: max
+  default: openai-codex/gpt-5.6-sol:xhigh
+defaultThinkingLevel: xhigh
 hideThinkingBlock: true
 omitThinking: true
 personality: pragmatic
@@ -10,12 +13,12 @@ tools:
   approvalMode: yolo
 task: 
   agentModelOverrides: 
-    task: "@codex"
+    task: "@codex_treatment"
     reviewer: "@codex_review"
     security-reviewer: "@codex_review"
-    scout: "@codex"
-    sonic: "@codex"
-    librarian: "@codex"
+    scout: "@codex_treatment"
+    sonic: "@codex_treatment"
+    librarian: "@codex_treatment"
 compaction: 
   thresholdPercent: 90
   thresholdTokens: 400000
@@ -29,8 +32,11 @@ statusLine:
   leftSegments: 
     - model
     - path
+    - pr
   rightSegments: 
     - context_pct
+    - token_total
+    - cost
     - usage
   segmentOptions: 
     model: 
@@ -44,3 +50,9 @@ dev:
   autoqaConsent: denied
 browser: 
   relay: true
+codexResets: 
+  autoRedeem: "yes"
+gc: 
+  coldArchiveAfterDays: 365
+  retainNewestGlobal: 500
+  retainNewestPerCwd: 100

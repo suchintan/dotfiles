@@ -21,6 +21,14 @@
 - Spawned Codex worker subagents must NOT run git at all (no add/commit/amend/push) — the orchestrating session owns git. (A worker once amended a pushed commit and force-pushed a PR that was under review.)
 - In interactive sessions, after completing requested code changes, `git commit` and `git push` to the current working branch without asking (subject to the gates above), unless the user says not to.
 
+# Obsidian Vault Repo — main only
+
+- `~/Development/obsidian` is a live Obsidian vault, not a code checkout. The `obsidian-git` plugin auto-commits and pushes every file change.
+- This checkout stays on `main`. Commit and push directly to `main` there. This is the explicit exception to the "never push directly to main" rule above.
+- NEVER run `git checkout -b`, `git switch -c`, `git checkout <branch>`, `git reset --hard`, or `git stash` in that directory — from any cwd, including through `git -C`. A branch switch deletes every note and skill the target branch lacks, and the plugin commits the deletion.
+- Need a branch there? Use a linked worktree: `git worktree add ~/Development/worktrees/obsidian/<name> -b <branch>`.
+- A `post-checkout` hook (`agents/git-hooks/post-checkout`, enabled via `core.hooksPath`) returns the vault checkout to `main` automatically. Linked worktrees are exempt. Full rules: `~/Development/obsidian/AGENTS.md`.
+
 # Browser Launch Policy — "Google Chrome for Testing"
 
 - "Google Chrome for Testing" (the browser that Playwright, Puppeteer, and rustwright download) MUST NOT touch the macOS Keychain. Unsafe launches fire "Chrome Safe Storage" Keychain prompts on my screen and interrupt me.
